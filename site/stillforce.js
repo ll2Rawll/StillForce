@@ -179,10 +179,16 @@ showPanel(0, false)
 
 const film = document.getElementById('trailer-player')
 const startFilm = document.getElementById('film-start')
+let filmHasPlayed = false
 
-async function playFilm() {
+function showFilmControls() {
   film.controls = true
   startFilm.hidden = true
+}
+
+async function playFilm() {
+  if (!filmHasPlayed) film.muted = false
+  showFilmControls()
   film.focus({ preventScroll: true })
   try {
     await film.play()
@@ -195,11 +201,60 @@ startFilm.addEventListener('click', playFilm)
 document.getElementById('hero-trailer').addEventListener('click', event => {
   if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) playFilm()
 })
-film.addEventListener('play', () => { startFilm.hidden = true })
+film.addEventListener('play', () => {
+  filmHasPlayed = true
+  showFilmControls()
+})
 film.addEventListener('ended', () => {
   film.controls = false
   startFilm.hidden = false
   startFilm.setAttribute('aria-label', 'Replay the Stillforce trailer')
 })
+
+if ('IntersectionObserver' in window) {
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)')
+  const enterRatio = 0.5
+  const exitRatio = 0.25
+  let inView = false
+  let intersects = false
+  let resumeOnReturn = true
+
+  function playOnEntry() {
+    if (!resumeOnReturn || reducedMotion.matches || !film.paused) return
+    if (!filmHasPlayed) film.muted = true
+    film.play().catch(() => {
+      // Browsers that require a gesture keep the manual play control.
+    })
+  }
+
+  function pauseOnExit() {
+    // Remember a visitor's pause before pausing for the viewport or tab.
+    resumeOnReturn = !filmHasPlayed || !film.paused || film.ended
+    if (!film.paused) film.pause()
+  }
+
+  const observer = new IntersectionObserver(entries => {
+    const previous = inView
+    let leftScreen = false
+    for (const entry of entries) {
+      if (intersects && !entry.isIntersecting) leftScreen = true
+      intersects = entry.isIntersecting
+      if (!intersects || entry.intersectionRatio < exitRatio) inView = false
+      else if (entry.intersectionRatio >= enterRatio) inView = true
+    }
+    if (document.hidden) return
+    if (inView && !previous) playOnEntry()
+    else if (!inView && (previous || (leftScreen && !intersects && !film.paused))) pauseOnExit()
+  }, { threshold: [0, exitRatio, enterRatio] })
+  observer.observe(film)
+  film.addEventListener('play', () => {
+    if (intersects && !film.paused) inView = true
+  })
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (inView || !film.paused) pauseOnExit()
+    } else if (inView) playOnEntry()
+  })
+}
 
 root.classList.add('js')
