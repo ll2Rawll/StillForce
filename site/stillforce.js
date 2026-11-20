@@ -9,7 +9,7 @@ function showTheme(theme) {
   const label = theme === 'dark' ? 'Use light theme' : 'Use dark theme'
   themeButton.setAttribute('aria-label', label)
   themeButton.title = label
-  themeColour.content = theme === 'dark' ? '#090f20' : '#eef4fd'
+  themeColour.content = theme === 'dark' ? '#0b0b0d' : '#f5f5f3'
 }
 showTheme(root.dataset.theme)
 themeButton.addEventListener('click', () => {
@@ -49,24 +49,90 @@ document.addEventListener('pointerdown', event => {
 })
 compactHeader.addEventListener('change', () => setMenu(false))
 
-const cases = [...document.querySelectorAll('.game-case')]
-const choices = [...document.querySelectorAll('[data-choice]')]
-const coverName = document.getElementById('cover-name')
+const artWindow = document.getElementById('art-window')
+const artName = document.getElementById('art-name')
+const artChoices = [...document.querySelectorAll('.art-choice')]
+const portraits = [artWindow.querySelector('.portrait')]
+let activeArt = 0
+let requestedArt = 0
 
-function featureCover(index) {
-  const positions = ['front', 'left', 'right']
-  cases.forEach((item, i) => {
-    item.dataset.slot = positions[(i - index + cases.length) % cases.length]
-    item.setAttribute('aria-pressed', String(i === index))
-    choices[i].setAttribute('aria-pressed', String(i === index))
-  })
-  coverName.textContent = cases[index].querySelector('img').alt
+function getPortrait(index) {
+  if (!portraits[index]) {
+    const image = new Image()
+    image.className = 'portrait'
+    image.alt = ''
+    image.decoding = 'async'
+    image.src = artChoices[index].dataset.image
+    artWindow.append(image)
+    portraits[index] = image
+  }
+  return portraits[index]
 }
-cases.forEach((item, i) => {
-  item.disabled = false
-  item.addEventListener('click', () => featureCover(i))
+
+async function selectArt(index) {
+  requestedArt = index
+  if (index === activeArt) {
+    artName.textContent = artChoices[index].dataset.name
+    return
+  }
+  const image = getPortrait(index)
+  try {
+    await image.decode()
+  } catch {
+    // Keep the displayed artwork intact and allow another attempt.
+    if (portraits[index] !== image) return
+    image.remove()
+    portraits[index] = null
+    if (requestedArt === index) artName.textContent = artChoices[activeArt].dataset.name + ' · Artwork could not load'
+    return
+  }
+  if (requestedArt !== index || activeArt === index) return
+  portraits[activeArt].classList.remove('is-current')
+  artChoices[activeArt].setAttribute('aria-pressed', 'false')
+  activeArt = index
+  image.classList.add('is-current')
+  const choice = artChoices[index]
+  choice.setAttribute('aria-pressed', 'true')
+  artWindow.setAttribute('aria-label', choice.dataset.description)
+  artName.textContent = choice.dataset.name
+}
+
+artChoices.forEach((choice, index) => {
+  choice.addEventListener('pointerenter', () => getPortrait(index))
+  choice.addEventListener('focus', () => getPortrait(index))
+  choice.addEventListener('click', () => selectArt(index))
+  choice.addEventListener('keydown', event => {
+    let target
+    switch (event.key) {
+      case 'ArrowDown':
+      case 'ArrowRight': target = (index + 1) % artChoices.length; break
+      case 'ArrowUp':
+      case 'ArrowLeft': target = (index + artChoices.length - 1) % artChoices.length; break
+      case 'Home': target = 0; break
+      case 'End': target = artChoices.length - 1; break
+      default: return
+    }
+    event.preventDefault()
+    artChoices[target].focus()
+    selectArt(target)
+  })
 })
-choices.forEach((item, i) => item.addEventListener('click', () => featureCover(i)))
+
+let touchStart
+artWindow.addEventListener('pointerdown', event => {
+  if (!event.isPrimary || event.pointerType === 'mouse') return
+  touchStart = { x: event.clientX, y: event.clientY, id: event.pointerId }
+})
+artWindow.addEventListener('pointercancel', () => { touchStart = null })
+artWindow.addEventListener('pointerup', event => {
+  if (!touchStart || event.pointerId !== touchStart.id) return
+  const dx = event.clientX - touchStart.x
+  const dy = event.clientY - touchStart.y
+  touchStart = null
+  if (Math.abs(dx) < 42 || Math.abs(dx) < Math.abs(dy) * 1.3) return
+  const direction = dx < 0 ? 1 : -1
+  selectArt((requestedArt + direction + artChoices.length) % artChoices.length)
+})
 
 const galleryTabs = document.querySelector('.gallery-tabs')
 const tabs = [...galleryTabs.querySelectorAll('[data-panel]')]
@@ -113,19 +179,27 @@ showPanel(0, false)
 
 const film = document.getElementById('trailer-player')
 const startFilm = document.getElementById('film-start')
-film.controls = false
-startFilm.addEventListener('click', async () => {
+
+async function playFilm() {
   film.controls = true
   startFilm.hidden = true
   film.focus({ preventScroll: true })
   try {
     await film.play()
   } catch {
-    startFilm.hidden = false
+    // The native controls and the download link also work when playback is blocked.
   }
+}
+film.controls = false
+startFilm.addEventListener('click', playFilm)
+document.getElementById('hero-trailer').addEventListener('click', event => {
+  if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) playFilm()
 })
 film.addEventListener('play', () => { startFilm.hidden = true })
 film.addEventListener('ended', () => {
+  film.controls = false
   startFilm.hidden = false
   startFilm.setAttribute('aria-label', 'Replay the Stillforce trailer')
 })
+
+root.classList.add('js')
