@@ -1,0 +1,66 @@
+name: Publish Stillforce site
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/stillforce-site.yml
+      - docs/.nojekyll
+      - docs/index.html
+      - docs/site/**
+      - docs/media/home.webp
+      - docs/media/appearance.webp
+      - docs/media/statistics.webp
+      - docs/media/trailer-poster.webp
+      - docs/media/stillforce-trailer.mp4
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: stillforce-site-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check the configured publishing branch
+        id: pages
+        run: |
+          branch=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq '.source.branch // ""')
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.pages.outputs.branch == 'gh-pages'
+        with:
+          path: source
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        if: steps.pages.outputs.branch == 'gh-pages'
+        with:
+          ref: gh-pages
+          path: published
+
+      - name: Publish the static files
+        if: steps.pages.outputs.branch == 'gh-pages'
+        run: |
+          cp source/docs/index.html source/docs/.nojekyll published/
+          mkdir -p published/site published/media
+          rsync -a --delete source/docs/site/ published/site/
+          for media in home.webp appearance.webp statistics.webp trailer-poster.webp stillforce-trailer.mp4; do
+            cp "source/docs/media/$media" published/media/
+          done
+          git -C published add .nojekyll index.html site media
+          if ! git -C published diff --cached --quiet; then
+            git -C published config user.name 'github-actions[bot]'
+            git -C published config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git -C published commit -m "Publish Stillforce site from $GITHUB_SHA"
+            git -C published push origin HEAD:gh-pages
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/pages/builds" --silent

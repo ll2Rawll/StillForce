@@ -1,10 +1,10 @@
 # Stillforce
 
-[![Stillforce — The Cloud Gallery. Cyberpunk 2077, Control and No Man’s Sky appear as overlapping game covers.](docs/site/assets/stillforce-cover.jpg)](#inside-stillforce)
+[![Stillforce — The Cloud Gallery. Cyberpunk 2077, Control and No Man’s Sky appear as overlapping game covers.](docs/site/assets/stillforce-cover.jpg)](https://ll2rawll.github.io/StillForce/)
 
 A standalone **GeForce NOW client for Windows** with a dark, interactive game gallery. Move across the cover wall and the game’s artwork fills the arch beside it. Play from the gallery or open the details.
 
-**[Watch the 21-second trailer](https://cdn.jsdelivr.net/gh/ll2Rawll/StillForce@stillforce-v1.0.6/docs/media/stillforce-trailer.mp4)** · **[Download for Windows x64](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Windows-x64.zip)** · [Save the MP4](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Trailer.mp4) · [Get the source ZIP](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Source.zip)
+**[Visit the Stillforce site](https://ll2rawll.github.io/StillForce/)** · **[Watch the 21-second trailer](https://cdn.jsdelivr.net/gh/ll2Rawll/StillForce@stillforce-v1.0.6/docs/media/stillforce-trailer.mp4)** · **[Download for Windows x64](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Windows-x64.zip)** · [Save the MP4](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Trailer.mp4) · [Get the source ZIP](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Source.zip)
 
 ## Inside Stillforce
 
