@@ -63,4 +63,13 @@ jobs:
             git -C published commit -m "Publish Stillforce site from $GITHUB_SHA"
             git -C published push origin HEAD:gh-pages
           fi
+          # A branch push can already have queued the native Pages build.
+          commit=$(git -C published rev-parse HEAD)
+          for delay in 0 2 4; do
+            sleep "$delay"
+            if gh api "repos/$GITHUB_REPOSITORY/pages/builds?per_page=5" |
+              jq -e --arg sha "$commit" 'any(.[]; .commit == $sha and (.status == "queued" or .status == "building" or .status == "built"))' >/dev/null; then
+              exit 0
+            fi
+          done
           gh api --method POST "repos/$GITHUB_REPOSITORY/pages/builds" --silent
