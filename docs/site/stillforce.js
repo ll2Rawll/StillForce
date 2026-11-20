@@ -179,7 +179,23 @@ showPanel(0, false)
 
 const film = document.getElementById('trailer-player')
 const startFilm = document.getElementById('film-start')
+const soundButton = document.getElementById('film-sound')
 let filmHasPlayed = false
+let mutedForAutoplay = false
+let playbackRequest = 0
+
+function updateSoundButton() {
+  if (!film.muted) mutedForAutoplay = false
+  soundButton.hidden = !mutedForAutoplay || film.volume === 0 || film.paused || film.ended
+}
+
+function restoreTrailerSound() {
+  // Preserve a visitor's mute choice. Only undo the browser-policy fallback.
+  if (!mutedForAutoplay) return
+  mutedForAutoplay = false
+  film.muted = false
+  soundButton.hidden = true
+}
 
 function showFilmControls() {
   film.controls = true
@@ -187,7 +203,8 @@ function showFilmControls() {
 }
 
 async function playFilm() {
-  if (!filmHasPlayed) film.muted = false
+  playbackRequest++
+  restoreTrailerSound()
   showFilmControls()
   film.focus({ preventScroll: true })
   try {
@@ -198,17 +215,23 @@ async function playFilm() {
 }
 film.controls = false
 startFilm.addEventListener('click', playFilm)
+soundButton.addEventListener('click', playFilm)
 document.getElementById('hero-trailer').addEventListener('click', event => {
   if (!event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) playFilm()
 })
 film.addEventListener('play', () => {
+  if (!film.paused) playbackRequest++
   filmHasPlayed = true
   showFilmControls()
+  updateSoundButton()
 })
+film.addEventListener('volumechange', updateSoundButton)
+film.addEventListener('pause', updateSoundButton)
 film.addEventListener('ended', () => {
   film.controls = false
   startFilm.hidden = false
   startFilm.setAttribute('aria-label', 'Replay the Stillforce trailer')
+  updateSoundButton()
 })
 
 if ('IntersectionObserver' in window) {
@@ -219,15 +242,31 @@ if ('IntersectionObserver' in window) {
   let intersects = false
   let resumeOnReturn = true
 
-  function playOnEntry() {
+  async function playOnEntry() {
     if (!resumeOnReturn || reducedMotion.matches || !film.paused) return
-    if (!filmHasPlayed) film.muted = true
-    film.play().catch(() => {
-      // Browsers that require a gesture keep the manual play control.
-    })
+    const request = ++playbackRequest
+    restoreTrailerSound()
+    try {
+      await film.play()
+      return
+    } catch (error) {
+      if (error.name !== 'NotAllowedError') return
+    }
+
+    // Visibility or a visitor's playback choice may have changed during the request.
+    if (request !== playbackRequest || !inView || document.hidden || reducedMotion.matches) return
+    if (film.muted || !film.paused) return
+    mutedForAutoplay = true
+    film.muted = true
+    try {
+      await film.play()
+    } catch {
+      if (request === playbackRequest && film.paused) restoreTrailerSound()
+    }
   }
 
   function pauseOnExit() {
+    playbackRequest++
     // Remember a visitor's pause before pausing for the viewport or tab.
     resumeOnReturn = !filmHasPlayed || !film.paused || film.ended
     if (!film.paused) film.pause()
