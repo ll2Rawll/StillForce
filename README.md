@@ -1,6 +1,6 @@
 # Stillforce
 
-A standalone **GeForce NOW client for Windows** with a dark, interactive game gallery. Move across the cover wall and the game’s artwork fills the arch beside it. Play from the gallery or open the details. Streaming runs on OpenNOW’s native Rust engine.
+A standalone **GeForce NOW client for Windows** with a dark, interactive game gallery. Move across the cover wall and the game’s artwork fills the arch beside it. Play from the gallery or open the details.
 
 <a href="https://cdn.jsdelivr.net/gh/ll2Rawll/StillForce@stillforce-v1.0.6/docs/media/stillforce-trailer.mp4"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/media/trailer-poster.webp"><img src="docs/media/stillforce-preview.webp" alt="Watch the 21-second Stillforce trailer. Control, No Man’s Sky and Cyberpunk 2077 fill the arched artwork panel as the selection changes. The Windows app opens Favourites, scrolls a 31-game sample library and lands on Warframe." width="100%"></picture></a>
 
