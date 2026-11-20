@@ -8,9 +8,11 @@ FocusScope {
     property string route: "home"
     readonly property bool settingsPage: route.indexOf("settings") === 0 || route === "controllers"
     readonly property bool catalogPage: route === "home" || route === "library" || route === "store"
-    readonly property int headerHeight: settingsPage ? DesktopTokens.px(60) : DesktopTokens.topBarHeight
+    readonly property bool galleryPage: route === "home"
+    readonly property bool showHeader: !galleryPage || Boolean(ShellStore.resumableSession)
+    readonly property int headerHeight: !showHeader ? 0 : settingsPage ? DesktopTokens.px(60) : DesktopTokens.topBarHeight
     readonly property int gutter: width >= 760 ? DesktopTokens.px(12) : DesktopTokens.px(6)
-    readonly property int footerHeight: DesktopTokens.px(40)
+    readonly property int footerHeight: !galleryPage || updateChip.attention !== "" || ShellStore.remainingPlaytimeHours !== null ? DesktopTokens.px(40) : 0
     property string title: qsTr("Home")
     property string subtitle: qsTr("Your library")
     property bool searchVisible: !settingsPage && route !== "friends"
@@ -21,6 +23,7 @@ FocusScope {
     signal routeRequested(string route)
     signal consoleModeRequested()
     signal commandPaletteRequested()
+    signal gallerySearchRequested()
     signal accountSwitcherClosed()
     property bool accountSwitcherAllowed: true
     property bool accountSwitcherOpen: false
@@ -80,6 +83,7 @@ FocusScope {
 
         StillforceGlass {
             id: header
+            visible: root.showHeader
             width: parent.width; height: root.headerHeight
             readonly property real availableWidth: Math.max(0, width - DesktopTokens.px(48))
             radius: DesktopTokens.px(23)
@@ -175,6 +179,7 @@ FocusScope {
 
         StillforceGlass {
             id: footer
+            visible: root.footerHeight > 0
             anchors.bottom: parent.bottom
             width: parent.width
             height: root.footerHeight
@@ -288,7 +293,8 @@ FocusScope {
             root.routeRequested("settings")
             event.accepted = true
         } else if (event.key === Qt.Key_Slash && root.searchVisible) {
-            search.forceActiveFocus()
+            if (root.galleryPage && !root.showHeader) root.gallerySearchRequested()
+            else search.forceActiveFocus()
             event.accepted = true
         }
     }

@@ -199,6 +199,7 @@ FocusScope {
         onRouteRequested: route => root.openRoute(route)
         onConsoleModeRequested: root.toggleConsoleMode()
         onCommandPaletteRequested: root.commandOpen = true
+        onGallerySearchRequested: if (root.contentRoute === "home" && pageLoader.item) pageLoader.item.openSearch()
         accountSwitcherAllowed: root.shellVisible && !root.commandOpen && AppController.overlay === ""
             && !bugReportNotice.opened && !streamEndNotice.opened && root.route !== "game-detail"
         onAccountSwitcherClosed: focusRestoreTimer.restart()
@@ -354,6 +355,7 @@ FocusScope {
         id: homeComponent
         DesktopHomeScreen {
             active: root.route === "home"
+            externalQuery: root.searchText
             onRouteRequested: route => AppController.navigate(route)
             onGameRequested: game => ShellStore.openGame(game)
             onPlayRequested: game => { ShellStore.selectedGame = game; ShellStore.launchSelectedGame(false) }

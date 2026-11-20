@@ -65,6 +65,8 @@ FocusScope {
         anchors.fill: parent
         radius: DesktopTokens.px(26)
         dense: true
+        opacity: root.currentRoute === "home" && root.compact ? 0 : 1
+        Behavior on opacity { NumberAnimation { duration: DesktopTokens.quickDuration } }
     }
 
     HoverHandler {

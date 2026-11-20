@@ -10,6 +10,7 @@ QtObject {
     property Component cardComponent: Component { DesktopStoreCard {} }
     property Component shelfComponent: Component { DesktopStoreShelf {} }
     property Component homeComponent: Component { DesktopHomeScreen {} }
+    property Component homePosterComponent: Component { DesktopHomePoster {} }
     property AcceptanceCoreClient client: AcceptanceCoreClient {
         property string state: "ready"
         property string lastError: ""
@@ -362,6 +363,11 @@ QtObject {
         ShellStore.catalogGames = []
         ShellStore.catalogState = "loading"
         const homeHost = hostComponent.createObject(screen, {width:600,height:500,visible:false})
+        const homePoster = homePosterComponent.createObject(homeHost, {game:homeGames[0]})
+        const homeLabels = namedChild(homePoster, "desktopGameLabels")
+        check(homeLabels && homeLabels.launchers.length === 1 && homeLabels.summary.length > 0,
+            "Home lost the game’s storefront and accessible cover description")
+        homePoster.destroy()
         const home = homeComponent.createObject(homeHost, {active:false})
         check(home !== null, "the Home navigation fixture did not load")
         check(home.catalogLoading, "Home did not show its initial loading state")
@@ -376,6 +382,34 @@ QtObject {
         homeHost.width = 380
         check(home.focusIndex < home.homeTileCount,
             "shrinking Home left keyboard selection beyond the visible cards")
+        home.setSelection(1, 0)
+        for (let i = 0; i < homeGames.length; ++i) home.moveVertical(1)
+        for (let i = 0; i < home.homeTileCount; ++i) home.moveHorizontal(1)
+        check((home.focusZone - 1) * home.homeTileCount + home.focusIndex === homeGames.length - 1,
+            "the full Home library could not reach its last game")
+        const initialSettings = ShellStore.settings
+        ShellStore.settings = Object.assign({}, initialSettings, {favoriteGameIds:[homeGames[5].uuid]})
+        home.chooseFilter(2)
+        check(home.visibleGames.length === 1 && home.visibleGames[0].id === homeGames[5].id,
+            "Home favourites showed games outside the pinned set")
+        home.chooseFilter(1)
+        check(home.visibleGames.length === 0 && home.focusZone === -1,
+            "an empty recent list retained a stale card selection")
+        home.chooseFilter(0)
+        home.stepFeature(1)
+        check(home.heroGame.id === homeGames[1].id && home.visibleGames.length === homeGames.length,
+            "changing the featured game changed the library")
+        home.externalQuery = "HOME-13"
+        check(home.visibleGames.length === 1 && home.heroGame.id === homeGames[13].id,
+            "Home search did not update the wall and its selected artwork together")
+        home.externalQuery = ""
+        home.setSelection(1, 0)
+        check(home.heroGame.id === homeGames[0].id,
+            "keyboard focus did not preview the selected game")
+        const homeGrid = namedChild(home, "homeGameGrid")
+        check(homeGrid.width >= home.homeTileCount * homeGrid.cellWidth,
+            "the native cover wall wrapped before the keyboard row ended")
+        ShellStore.settings = initialSettings
         home.destroy()
         homeHost.destroy()
         ShellStore.catalogGames = originalLibrary

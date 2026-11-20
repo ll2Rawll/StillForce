@@ -302,6 +302,8 @@ qt_add_qml_module(opennow-qt
         qml/desktop/components/DesktopTokens.qml
         qml/desktop/components/StillforceGlass.qml
         qml/desktop/friends/DesktopFriendsScreen.qml
+        qml/desktop/home/DesktopHomeHero.qml
+        qml/desktop/home/DesktopHomeLibraryBar.qml
         qml/desktop/home/DesktopHomePoster.qml
         qml/desktop/home/DesktopHomeScreen.qml
         qml/desktop/library/DesktopLibraryScreen.qml
@@ -451,6 +453,8 @@ qt_add_qml_module(opennow-qt
         res/brand/desktop-renew.jpg
         res/onboarding/desktop-preview.png
         res/onboarding/console-preview.png
+        res/fonts/InstrumentSerif-Regular.ttf
+        res/fonts/InstrumentSerif-OFL.txt
         res/fonts/Nunito-Variable.ttf
         res/fonts/NotoSansKR-Variable.ttf
         res/fonts/NotoSansKR-OFL.txt

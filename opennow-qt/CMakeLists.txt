@@ -7,7 +7,7 @@ if(POLICY CMP0207)
     cmake_policy(SET CMP0207 NEW)
 endif()
 
-project(Stillforce VERSION 1.0.5 LANGUAGES C CXX)
+project(Stillforce VERSION 1.0.6 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 include(cmake/BuildMetadata.cmake)

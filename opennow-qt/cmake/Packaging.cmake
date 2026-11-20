@@ -79,7 +79,8 @@ install(FILES "${OPENNOW_GENERATED_NOTICES}"
 install(DIRECTORY packaging/licenses/
     DESTINATION "${OPENNOW_LICENSE_DESTINATION}"
 )
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/res/fonts/NotoSansKR-OFL.txt"
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/res/fonts/InstrumentSerif-OFL.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/res/fonts/NotoSansKR-OFL.txt"
     "${CMAKE_CURRENT_SOURCE_DIR}/res/brand/StillCord-LICENSE.txt"
     DESTINATION "${OPENNOW_LICENSE_DESTINATION}"
 )

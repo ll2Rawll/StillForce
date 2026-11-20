@@ -32,7 +32,7 @@ Item {
     onShownChanged: synchronize()
     Component.onCompleted: { initialized = true; synchronize() }
     onProgressChanged: if (initialized && progress === 0 && !shown)
-        Qt.callLater(() => { if (!root.shown && root.progress === 0) root.hidden() })
+        Qt.callLater(() => { if (root && !root.shown && root.progress === 0) root.hidden() })
 
     NumberAnimation {
         id: animation
