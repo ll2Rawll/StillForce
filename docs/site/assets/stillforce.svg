@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+ <defs>
+  <linearGradient id="base" x1=".04" y1="0" x2=".9" y2="1" gradientUnits="objectBoundingBox"><stop stop-color="#363b48"/><stop offset=".42" stop-color="#181a22"/><stop offset="1" stop-color="#08090e"/></linearGradient>
+  <linearGradient id="metal" x1=".13" y1="0" x2=".85" y2="1" gradientUnits="objectBoundingBox"><stop stop-color="#ffffff"/><stop offset=".32" stop-color="#d8e2f5"/><stop offset=".50" stop-color="#7586a3"/><stop offset=".66" stop-color="#f1f5ff"/><stop offset="1" stop-color="#a7bada"/></linearGradient>
+  <linearGradient id="rim" x1="0" y1="0" x2=".8" y2="1" gradientUnits="objectBoundingBox"><stop stop-color="#a4aec6"/><stop offset=".30" stop-color="#585e70"/><stop offset=".65" stop-color="#252b37"/><stop offset="1" stop-color="#596072"/></linearGradient>
+ </defs>
+ <rect x="3" y="3" width="122" height="122" rx="32" fill="url(#base)" stroke="url(#rim)" stroke-width="2.6"/>
+ <path d="M94 40C77 33 48 34 41 43C32 55 47 61 66 65C82 69 92 73 89 84C85 98 52 100 34 92L39 80C53 85 72 86 76 80C80 74 64 73 51 68C32 62 25 54 30 42C37 25 75 22 99 29Z" transform="rotate(-10 64 64)" fill="url(#metal)"/>
+</svg>
