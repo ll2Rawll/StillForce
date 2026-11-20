@@ -1,0 +1,131 @@
+#pragma once
+
+#include <QList>
+#include <QImage>
+#include <QMargins>
+#include <QObject>
+#include <QRect>
+#include <QString>
+#include <QStringList>
+#include <QVector>
+#include <QWindow>
+
+#ifdef Q_OS_WIN
+#include <QAbstractNativeEventFilter>
+#endif
+
+#include <functional>
+
+class AppController final : public QObject
+#ifdef Q_OS_WIN
+    , public QAbstractNativeEventFilter
+#endif
+{
+    Q_OBJECT
+    Q_PROPERTY(QString route READ route NOTIFY routeChanged)
+    Q_PROPERTY(QString backRoute READ backRoute NOTIFY routeChanged)
+    Q_PROPERTY(QString overlay READ overlay NOTIFY overlayChanged)
+    Q_PROPERTY(bool reducedMotion READ reducedMotion WRITE setReducedMotion NOTIFY reducedMotionChanged)
+    Q_PROPERTY(int controllerCount READ controllerCount WRITE setControllerCount NOTIFY controllerCountChanged)
+    Q_PROPERTY(QString inputMode READ inputMode WRITE setInputMode NOTIFY inputModeChanged)
+    Q_PROPERTY(bool consoleLaunchInputBlocked READ consoleLaunchInputBlocked WRITE setConsoleLaunchInputBlocked NOTIFY consoleLaunchInputBlockedChanged)
+    Q_PROPERTY(bool consoleLaunchInputDraining READ consoleLaunchInputDraining NOTIFY consoleLaunchInputDrainingChanged)
+
+public:
+    explicit AppController(QObject *parent = nullptr);
+
+    [[nodiscard]] QString route() const;
+    [[nodiscard]] QString backRoute() const;
+    [[nodiscard]] QString overlay() const;
+    [[nodiscard]] bool reducedMotion() const;
+    [[nodiscard]] int controllerCount() const;
+    [[nodiscard]] QString inputMode() const;
+    [[nodiscard]] bool consoleLaunchInputBlocked() const { return m_consoleLaunchInputBlocked; }
+    [[nodiscard]] bool consoleLaunchInputDraining() const { return m_consoleLaunchInputDraining; }
+    void setConsoleLaunchInputBlocked(bool blocked);
+    void setConsoleLaunchInputDraining(bool draining);
+
+    Q_INVOKABLE bool navigate(const QString &route);
+    Q_INVOKABLE bool navigateFromLastPrimary(const QString &route);
+    Q_INVOKABLE bool showOverlay(const QString &overlay);
+    Q_INVOKABLE bool goBack();
+    Q_INVOKABLE bool cyclePrimaryRoute(int direction);
+    Q_INVOKABLE bool cycleGuidePage(int direction);
+    Q_INVOKABLE QStringList supportedRoutes() const;
+    Q_INVOKABLE bool openExternalUrl(const QString &url) const;
+    Q_INVOKABLE bool openLocalPath(const QString &path, bool reveal = false) const;
+    Q_INVOKABLE QString readClipboardText() const;
+    Q_INVOKABLE bool writeClipboardText(const QString &text) const;
+    Q_INVOKABLE QString shortcutFromKey(int key, int modifiers) const;
+    Q_INVOKABLE QString normalizeShortcut(const QString &shortcut) const;
+    Q_INVOKABLE QString normalizeNativeStreamerExecutable(const QString &urlOrPath) const;
+    Q_INVOKABLE bool copyScreenshotTo(const QString &sourcePath,
+                                      const QString &destinationUrlOrPath) const;
+    Q_INVOKABLE bool openThemeDirectory() const;
+    Q_INVOKABLE bool captureStreamScreenshot(const QString &gameTitle);
+    void setScreenshotCapture(std::function<bool()> capture);
+    void saveStreamScreenshot(const QImage &image);
+    Q_INVOKABLE bool captureScreenRegionTo(int x, int y, int width, int height,
+                                           const QString &outputPath) const;
+    Q_INVOKABLE bool ensureDirectLaunchAssociation() const;
+    Q_INVOKABLE void activateWindow();
+    Q_INVOKABLE void requestWindowAttention(QWindow *window) const;
+    Q_INVOKABLE void restoreWindowGeometry(QWindow *window, const QRect &saved,
+                                           bool hasPosition) const;
+    [[nodiscard]] static QRect restorableWindowGeometry(const QRect &saved, bool hasPosition,
+                                                        const QMargins &frame,
+                                                        const QRect &fallbackScreen,
+                                                        const QList<QRect> &screens);
+    Q_INVOKABLE void quitApplication();
+    Q_INVOKABLE void restartApplication();
+    Q_INVOKABLE bool handleArguments(const QStringList &arguments);
+
+    void setOverlayTransitionGuard(std::function<bool(bool)> guard);
+
+    // Physical DPI of the window's screen (or primary). Used for remote UI scale.
+    Q_INVOKABLE int screenDpi(QWindow *window = nullptr) const;
+
+public slots:
+    void setReducedMotion(bool reducedMotion);
+    void setControllerCount(int count);
+    void setInputMode(const QString &mode);
+
+signals:
+    void streamScreenshotSaved(const QString &path);
+    void routeChanged();
+    void overlayChanged();
+    void reducedMotionChanged();
+    void controllerCountChanged();
+    void inputModeChanged();
+    void consoleLaunchInputBlockedChanged();
+    void consoleLaunchInputDrainingChanged();
+    void consoleLaunchSkipRequested();
+    void activationRequested();
+    void applicationExitCommitted();
+    void restartRequested();
+    void directLaunchRequested(const QString &appId, const QString &title);
+
+private:
+#ifdef Q_OS_WIN
+    bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *result) override;
+    void readSystemMotion();
+#endif
+    bool applyOverlay(const QString &overlay);
+    static const QStringList &routes();
+    static const QStringList &primaryRoutes();
+    static const QStringList &overlays();
+
+    QString m_route;
+    QString m_overlay;
+    bool m_reducedMotion = false;
+    bool m_systemReducedMotion = false;
+    bool m_consoleLaunchInputBlocked = false;
+    bool m_consoleLaunchInputDraining = false;
+    int m_controllerCount = 0;
+    QString m_inputMode = QStringLiteral("keyboard");
+    QVector<QString> m_routeHistory;
+    std::function<bool(bool)> m_overlayTransitionGuard;
+    std::function<bool()> m_screenshotCapture;
+    QString m_screenshotTitle;
+    bool m_screenshotPending = false;
+};

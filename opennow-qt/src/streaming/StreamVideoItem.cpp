@@ -1,0 +1,523 @@
+#include "streaming/StreamVideoItem.h"
+
+#include "input/platform/WaylandPointerCapture.h"
+#include "input/platform/MacPointerCapture.h"
+#include "input/platform/WindowsWindowMoveLoop.h"
+#include "streaming/NativeStreamRuntime.h"
+#include "streaming/rendering/NativeStreamRenderCallback.h"
+#include "streaming/rendering/StreamSenderPacer.h"
+
+#include <QCursor>
+#include <QCoreApplication>
+#include <QMetaObject>
+#include <QQmlEngine>
+#include <QQuickWindow>
+#include <QThread>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <utility>
+
+QPointer<NativeStreamRuntime> StreamVideoItem::s_nativeRuntime;
+
+StreamVideoItem::StreamVideoItem(QQuickItem *parent)
+    : StreamVideoItem(std::make_unique<MacPointerCapture>(), MacPointerCapture::isSupported(), parent)
+{
+}
+
+StreamVideoItem::StreamVideoItem(std::unique_ptr<MacPointerCapture> pointerCapture,
+                               bool usesMacPointerCapture, QQuickItem *parent)
+    : QQuickItem(parent), m_waylandPointer(std::make_unique<WaylandPointerCapture>()),
+      m_macPointer(std::move(pointerCapture)), m_usesMacPointerCapture(usesMacPointerCapture)
+{
+    connect(m_macPointer.get(), &MacPointerCapture::stateChanged, this, [this] {
+        syncCaptureState();
+        emit inputCaptureErrorChanged();
+    }, Qt::QueuedConnection);
+    connect(m_macPointer.get(), &MacPointerCapture::relativeMotion, this,
+            [this](qint16 x, qint16 y) {
+        if (m_captureActive && m_inputEnabled && m_relativeMouse && m_macPointer->locked() && s_nativeRuntime)
+            s_nativeRuntime->submitMouseRelative(x, y);
+    });
+    connect(m_waylandPointer.get(), &WaylandPointerCapture::stateChanged, this, [this] {
+        syncCaptureState();
+        emit inputCaptureErrorChanged();
+    }, Qt::QueuedConnection);
+    connect(m_waylandPointer.get(), &WaylandPointerCapture::relativeMotion, this,
+            [this](qint16 x, qint16 y) {
+        if (m_captureActive && m_inputEnabled && m_relativeMouse && s_nativeRuntime)
+            s_nativeRuntime->submitMouseRelative(x, y);
+    });
+    m_windowsWindowMoveLoop = std::make_unique<WindowsWindowMoveLoop>(
+        [this] { return isVisible() && s_nativeRuntime && s_nativeRuntime->running(); },
+        [this](bool active) { setNativeWindowMoveLoop(active); });
+    setFlag(ItemHasContents, true);
+    setActiveFocusOnTab(true);
+    setAcceptedMouseButtons(Qt::AllButtons);
+    setKeepMouseGrab(true);
+    setAcceptHoverEvents(true);
+    m_relativeMouse = m_usesMacPointerCapture && m_macPointerLockEnabled;
+    m_frameStatsTimer.setInterval(1000);
+    connect(&m_frameStatsTimer, &QTimer::timeout,
+            this, &StreamVideoItem::frameGenerationStatsChanged);
+    m_swapStatsTimer.setInterval(1000);
+    connect(&m_swapStatsTimer, &QTimer::timeout, this, &StreamVideoItem::swapStatsChanged);
+    m_guiStallProbe.setTimerType(Qt::PreciseTimer);
+    m_guiStallProbe.setInterval(10);
+    connect(&m_guiStallProbe, &QTimer::timeout, this, [this] {
+        const qint64 now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        const qint64 gap = m_guiStallLastNs ? now - m_guiStallLastNs : 0;
+        m_guiStallLastNs = now;
+        // Two frames of a 60 FPS stream or more, at most two lines a second.
+        if (gap < 35'000'000 || !isVisible() || !s_nativeRuntime
+            || now - m_guiStallLoggedNs < 500'000'000) return;
+        m_guiStallLoggedNs = now;
+        s_nativeRuntime->logRenderDiagnostic(QStringLiteral("gui-stall ms=%1 frame-generation=%2x")
+            .arg(double(gap - 10'000'000) / 1e6, 0, 'f', 1).arg(m_frameGenerationFactor));
+    });
+    m_guiStallProbe.start();
+    m_senderFrameTimer.setSingleShot(true);
+    m_senderFrameTimer.setTimerType(Qt::PreciseTimer);
+    connect(&m_senderFrameTimer, &QChronoTimer::timeout, this, [this] {
+        if (isVisible() && m_swapGateSource.isEmpty() && m_renderCallback) update();
+    });
+    connect(this, &QQuickItem::visibleChanged, this, &StreamVideoItem::updateSwapGate,
+            Qt::UniqueConnection);
+    if (s_nativeRuntime) {
+        m_relativeMouse = m_usesMacPointerCapture ? m_macPointerLockEnabled
+                                                : s_nativeRuntime->defaultRelativeMouse();
+        m_decodedVideoSize = s_nativeRuntime->decodedDisplaySize();
+        refreshVideoSize();
+        connect(s_nativeRuntime, &NativeStreamRuntime::decodedDisplaySizeChanged, this,
+                [this](const QSize &size, quint64 generation) {
+            if (!s_nativeRuntime || generation != s_nativeRuntime->presentationGeneration()) return;
+            m_decodedVideoSize = size;
+            refreshVideoSize();
+        });
+        m_serverCursorComposited = s_nativeRuntime->serverCursorComposited();
+        connect(s_nativeRuntime, &NativeStreamRuntime::cursorCaptureChanged, this,
+                [this](bool composited) {
+            m_serverCursorComposited = composited;
+            updateLocalCursor();
+        });
+        connect(s_nativeRuntime, &NativeStreamRuntime::cursorStateReset,
+                this, &StreamVideoItem::resetRemoteCursor);
+        connect(s_nativeRuntime, &NativeStreamRuntime::inputAllowedChanged,
+                this, &StreamVideoItem::syncCaptureState);
+        connect(s_nativeRuntime, &NativeStreamRuntime::inputCaptureReset, this, [this] {
+            m_manualRelativeMouse.reset();
+            releaseInput();
+            m_rawInputActive = false;
+            if (std::exchange(m_captureActive, false)) emit captureActiveChanged();
+        });
+        setRenderCallback(createNativeStreamRenderCallback(s_nativeRuntime));
+        connect(s_nativeRuntime, &NativeStreamRuntime::frameAvailable,
+                this, &StreamVideoItem::requestFrame);
+        connect(s_nativeRuntime, &NativeStreamRuntime::cursorUpdated,
+                this, &StreamVideoItem::applyRemoteCursor);
+        connect(s_nativeRuntime, &NativeStreamRuntime::runningChanged, this, [this] {
+            if (!s_nativeRuntime || !s_nativeRuntime->running()) {
+                m_manualRelativeMouse.reset();
+                resetRemoteCursor();
+            }
+            syncCaptureState();
+        });
+    }
+    const auto attachWindow = [this](QQuickWindow *currentWindow) {
+        if (m_inputWindow) m_inputWindow->removeEventFilter(this);
+        m_inputWindow = currentWindow;
+        if (m_inputWindow) m_inputWindow->installEventFilter(this);
+        m_windowsWindowMoveLoop->setWindow(currentWindow);
+        connectFrameSwaps();
+        if (currentWindow) {
+            connect(currentWindow, &QWindow::activeChanged,
+                    this, &StreamVideoItem::syncCaptureState, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::visibilityChanged,
+                    this, &StreamVideoItem::updateSwapGate, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::xChanged,
+                    this, &StreamVideoItem::updateCursorConfinement, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::yChanged,
+                    this, &StreamVideoItem::updateCursorConfinement, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::widthChanged,
+                    this, &StreamVideoItem::resynchronizeInput, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::heightChanged,
+                    this, &StreamVideoItem::resynchronizeInput, Qt::UniqueConnection);
+            connect(currentWindow, &QWindow::screenChanged,
+                    this, &StreamVideoItem::resynchronizeInput, Qt::UniqueConnection);
+        }
+        syncCaptureState();
+        updateSwapGate();
+    };
+    connect(this, &QQuickItem::windowChanged, this, attachWindow);
+    attachWindow(window());
+#if defined(Q_OS_WIN)
+    QCoreApplication::instance()->installNativeEventFilter(this);
+#endif
+}
+
+StreamVideoItem::~StreamVideoItem()
+{
+#if defined(Q_OS_WIN)
+    QCoreApplication::instance()->removeNativeEventFilter(this);
+#endif
+    m_windowsWindowMoveLoop.reset();
+    disconnect(this, nullptr, this, nullptr);
+    disconnect(m_frameSwapConnection);
+    disconnect(m_frameUpdateConnection);
+    disconnect(m_frameBeginConnection);
+    disconnect(m_afterRenderingConnection);
+    releaseInput();
+    if (s_nativeRuntime && s_nativeRuntime->running()) {
+        bool rawInput = false;
+        s_nativeRuntime->setCaptureActive(false, false, 0, &rawInput);
+    }
+}
+
+QSize StreamVideoItem::videoSize() const
+{
+    return m_videoSize;
+}
+
+void StreamVideoItem::setVideoSize(const QSize &size)
+{
+    m_requestedVideoSize = size.isValid() && !size.isEmpty() ? size : QSize{};
+    refreshVideoSize();
+}
+
+void StreamVideoItem::refreshVideoSize()
+{
+    const auto normalized = m_decodedVideoSize.isEmpty() ? m_requestedVideoSize : m_decodedVideoSize;
+    if (m_videoSize == normalized) return;
+    m_videoSize = normalized;
+    emit videoSizeChanged();
+    syncCaptureState();
+    update();
+}
+
+bool StreamVideoItem::renderCallbackAvailable() const
+{
+    return static_cast<bool>(m_renderCallback);
+}
+
+bool StreamVideoItem::nativeRuntimeAvailable() const
+{
+    return s_nativeRuntime && s_nativeRuntime->running();
+}
+
+bool StreamVideoItem::inputEnabled() const
+{
+    return m_inputEnabled;
+}
+
+void StreamVideoItem::setInputEnabled(bool enabled)
+{
+    if (m_inputEnabled == enabled) return;
+    m_inputEnabled = enabled;
+    syncCaptureState();
+    emit inputEnabledChanged();
+}
+
+bool StreamVideoItem::captureActive() const
+{
+    return m_captureActive;
+}
+
+bool StreamVideoItem::clipboardPaste() const
+{
+    return m_clipboardPaste;
+}
+
+void StreamVideoItem::setClipboardPaste(bool enabled)
+{
+    if (m_clipboardPaste == enabled) return;
+    m_clipboardPaste = enabled;
+    emit clipboardPasteChanged();
+}
+
+QString StreamVideoItem::keyboardLayout() const
+{
+    return m_keyboardLayout;
+}
+
+void StreamVideoItem::setKeyboardLayout(const QString &layout)
+{
+    if (m_keyboardLayout == layout) return;
+    m_keyboardLayout = layout;
+    m_keyboardMap = PhysicalKeyMap::layoutFor(layout.toStdString());
+    emit keyboardLayoutChanged();
+}
+
+QString StreamVideoItem::inputCaptureError() const
+{
+    return m_usesMacPointerCapture ? m_macPointer->error() : m_waylandPointer->error();
+}
+
+bool StreamVideoItem::relativeMouse() const
+{
+    return m_relativeMouse;
+}
+
+QVariantMap StreamVideoItem::shortcutBindings() const
+{
+    return m_shortcutBindings;
+}
+
+void StreamVideoItem::setShortcutBindings(const QVariantMap &bindings)
+{
+    if (m_shortcutBindings == bindings) return;
+    m_shortcutBindings = bindings;
+    emit shortcutBindingsChanged();
+}
+
+std::shared_ptr<StreamVideoRenderCallback> StreamVideoItem::renderCallback() const
+{
+    return m_renderCallback;
+}
+
+void StreamVideoItem::setRenderCallback(std::shared_ptr<StreamVideoRenderCallback> callback)
+{
+    if (m_renderCallback == callback) return;
+    const auto wasAvailable = renderCallbackAvailable();
+    m_renderCallback = std::move(callback);
+    if (m_renderCallback) m_swapStatsTimer.start();
+    else m_swapStatsTimer.stop();
+    connectFrameSwaps();
+    syncSwapGate();
+    if (wasAvailable != renderCallbackAvailable()) emit renderCallbackAvailableChanged();
+    update();
+}
+
+bool StreamVideoItem::frameGeneration() const
+{
+    return m_frameGenerationFactor >= 2;
+}
+
+void StreamVideoItem::setFrameGeneration(bool enabled)
+{
+    setFrameGenerationFactor(enabled ? 2 : 0);
+}
+
+int StreamVideoItem::frameGenerationFactor() const
+{
+    return m_frameGenerationFactor;
+}
+
+int StreamVideoItem::displayRefreshOverrideHz() const
+{
+    return m_displayRefreshOverrideHz;
+}
+
+void StreamVideoItem::setDisplayRefreshOverrideHz(int hz)
+{
+    hz = std::clamp(hz, 0, 1000);
+    if (m_displayRefreshOverrideHz == hz) return;
+    m_displayRefreshOverrideHz = hz;
+    emit displayRefreshOverrideHzChanged();
+    update();
+}
+
+bool StreamVideoItem::generatedFramesOnly() const
+{
+    return m_generatedFramesOnly;
+}
+
+void StreamVideoItem::setGeneratedFramesOnly(bool enabled)
+{
+    if (m_generatedFramesOnly == enabled) return;
+    m_generatedFramesOnly = enabled;
+    emit generatedFramesOnlyChanged();
+    update();
+}
+
+void StreamVideoItem::setFrameGenerationFactor(int factor)
+{
+    factor = factor >= 2 ? std::min(factor, 4) : 0;
+    if (m_frameGenerationFactor == factor) return;
+    m_frameGenerationFactor = factor;
+    if (factor) m_frameStatsTimer.start();
+    else m_frameStatsTimer.stop();
+    emit frameGenerationChanged();
+    emit frameGenerationStatsChanged();
+    update();
+}
+
+QVariantMap StreamVideoItem::frameGenerationStats() const
+{
+    return m_renderCallback ? m_renderCallback->frameGenerationStats() : QVariantMap{};
+}
+
+QVariantMap StreamVideoItem::swapStats() const
+{
+    QVariantMap stats = m_renderCallback ? m_renderCallback->swapStats() : QVariantMap{};
+    stats.insert(QStringLiteral("gated"), !m_swapGateSource.isEmpty());
+    if (!m_swapGateSource.isEmpty())
+        stats.insert(QStringLiteral("gateSource"), m_swapGateSource);
+    return stats;
+}
+
+QString StreamVideoItem::currentSwapGateSource() const
+{
+    if (const auto *currentWindow = window();
+               currentWindow
+               && (!currentWindow->isVisible()
+                   || currentWindow->visibility() == QWindow::Minimized)) {
+        return currentWindow->isVisible() ? QStringLiteral("minimized")
+                                          : QStringLiteral("hidden");
+    }
+    if (!isVisible()) return QStringLiteral("hidden");
+    return {};
+}
+
+void StreamVideoItem::pushSwapGate()
+{
+    if (m_renderCallback)
+        m_renderCallback->setSwapGated(!m_swapGateSource.isEmpty(), m_swapGateSource);
+    emit swapStatsChanged();
+}
+
+void StreamVideoItem::updateSwapGate()
+{
+    const auto source = currentSwapGateSource();
+    if (source == m_swapGateSource) return;
+    m_swapGateSource = source;
+    if (!source.isEmpty()) m_senderFrameTimer.stop();
+    pushSwapGate();
+}
+
+void StreamVideoItem::syncSwapGate()
+{
+    m_swapGateSource = currentSwapGateSource();
+    pushSwapGate();
+}
+
+int StreamVideoItem::upscalingSharpness() const
+{
+    return m_upscalingSharpness;
+}
+
+void StreamVideoItem::setUpscalingSharpness(int value)
+{
+    value = qBound(0, value, 15);
+    if (m_upscalingSharpness == value) return;
+    m_upscalingSharpness = value;
+    emit upscalingSharpnessChanged();
+    update();
+}
+
+int StreamVideoItem::upscalingDenoise() const
+{
+    return m_upscalingDenoise;
+}
+
+void StreamVideoItem::setUpscalingDenoise(int value)
+{
+    value = qBound(0, value, 20);
+    if (m_upscalingDenoise == value) return;
+    m_upscalingDenoise = value;
+    emit upscalingDenoiseChanged();
+    update();
+}
+
+bool StreamVideoItem::metalFxUpscaling() const
+{
+    return m_metalFxUpscaling;
+}
+
+void StreamVideoItem::setMetalFxUpscaling(bool enabled)
+{
+#if !defined(Q_OS_MACOS)
+    enabled = false;
+#endif
+    if (m_metalFxUpscaling == enabled) return;
+    m_metalFxUpscaling = enabled;
+    emit metalFxUpscalingChanged();
+    update();
+}
+
+bool StreamVideoItem::fsrUpscaling() const
+{
+    return m_fsrUpscaling;
+}
+
+void StreamVideoItem::setFsrUpscaling(bool enabled)
+{
+    if (m_fsrUpscaling == enabled) return;
+    m_fsrUpscaling = enabled;
+    emit fsrUpscalingChanged();
+    update();
+}
+
+void StreamVideoItem::connectFrameSwaps()
+{
+    m_senderFrameTimer.stop();
+    disconnect(m_frameSwapConnection);
+    disconnect(m_frameUpdateConnection);
+    disconnect(m_frameBeginConnection);
+    disconnect(m_afterRenderingConnection);
+    if (!window() || !m_renderCallback) return;
+    const std::weak_ptr<StreamVideoRenderCallback> callback = m_renderCallback;
+    m_frameBeginConnection = connect(window(), &QQuickWindow::beforeFrameBegin, this,
+                                     [callback, target = window()] {
+        if (auto renderer = callback.lock()) renderer->beforeFrameBegin(target);
+    }, Qt::DirectConnection);
+    m_afterRenderingConnection = connect(window(), &QQuickWindow::afterRendering, this, [callback] {
+        if (auto renderer = callback.lock()) renderer->afterRendering();
+    }, Qt::DirectConnection);
+    m_frameSwapConnection = connect(window(), &QQuickWindow::frameSwapped, this, [callback] {
+        if (auto renderer = callback.lock()) renderer->frameSwapped();
+    }, Qt::DirectConnection);
+    m_frameUpdateConnection = connect(window(), &QQuickWindow::frameSwapped, this, [this] {
+        if (isVisible() && m_swapGateSource.isEmpty() && m_renderCallback) {
+            const auto deadline = m_renderCallback->nextFrameDeadlineNs();
+            if (deadline != 0) {
+                const auto now = StreamSenderPacer::clockNs();
+                m_senderFrameTimer.setInterval(std::chrono::nanoseconds(deadline > now ? deadline - now : 0));
+                m_senderFrameTimer.start();
+                return;
+            }
+        }
+        m_senderFrameTimer.stop();
+        if ((m_frameGenerationFactor >= 2) && isVisible() && m_renderCallback && m_renderCallback->needsFrame())
+            update();
+    }, Qt::QueuedConnection);
+}
+
+void StreamVideoItem::setNativeStreamRuntime(NativeStreamRuntime *runtime)
+{
+    s_nativeRuntime = runtime;
+}
+
+NativeStreamRuntime *StreamVideoItem::nativeStreamRuntime()
+{
+    return s_nativeRuntime.data();
+}
+
+void StreamVideoItem::requestFrame()
+{
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(this, &StreamVideoItem::requestFrame, Qt::QueuedConnection);
+        return;
+    }
+    update();
+}
+
+QRect StreamVideoItem::aspectFitRect(const QSize &videoSize, const QSize &targetSize)
+{
+    if (!targetSize.isValid() || targetSize.isEmpty()) return {};
+    if (!videoSize.isValid() || videoSize.isEmpty()) return QRect(QPoint{}, targetSize);
+
+    const auto scale = std::min(static_cast<double>(targetSize.width()) / videoSize.width(),
+                                static_cast<double>(targetSize.height()) / videoSize.height());
+    const auto width = std::max(1, static_cast<int>(std::floor(videoSize.width() * scale)));
+    const auto height = std::max(1, static_cast<int>(std::floor(videoSize.height() * scale)));
+    return QRect((targetSize.width() - width) / 2,
+                 (targetSize.height() - height) / 2,
+                 width, height);
+}
+
+void registerStreamVideoItemQmlType()
+{
+    qmlRegisterType<StreamVideoItem>("OpenNOW", 1, 0, "StreamVideoItem");
+}

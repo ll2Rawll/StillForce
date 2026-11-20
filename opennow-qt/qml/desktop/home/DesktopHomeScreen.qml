@@ -1,0 +1,512 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Effects
+import OpenNOW
+
+FocusScope {
+    id: root
+    objectName: "desktopHomeScreen"
+
+    readonly property string pageTitle: qsTr("Home")
+    readonly property string pageSubtitle: ShellStore.catalogTotalCount
+        ? qsTr("%1 games").arg(ShellStore.catalogTotalCount)
+        : qsTr("Your library")
+    property int focusZone: 0
+    property int focusIndex: 0
+    property bool active: true
+    property double lastPlayedNowMs: Date.now()
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: root.active && root.visible && Qt.application.state === Qt.ApplicationActive
+        triggeredOnStart: true
+        onTriggered: root.lastPlayedNowMs = Date.now()
+    }
+
+    signal routeRequested(string route)
+    signal gameRequested(var game)
+    signal playRequested(var game)
+
+    anchors.fill: parent
+    focus: active
+    clip: true
+    Accessible.role: Accessible.Pane
+    Accessible.name: pageTitle
+
+    readonly property var games: ShellStore.catalogGames || []
+    readonly property bool catalogLoading: ShellStore.catalogInitialLoading
+    readonly property var sortedRecent: {
+        const list = (root.games || []).slice()
+        list.sort((left, right) => String(right.lastPlayed || "").localeCompare(String(left.lastPlayed || "")))
+        return list
+    }
+    readonly property var heroGame: root.sortedRecent.length ? root.sortedRecent[0] : null
+    readonly property string heroArtwork: DesktopTokens.decodeArtworkUrl(
+        DesktopTokens.artworkUrl(root.heroGame, true))
+    readonly property var jumpGames: root.takeGames(root.sortedRecent, 1, 12)
+    readonly property var favoriteGames: {
+        const list = []
+        for (let i = 0; i < root.games.length; ++i) {
+            if (ShellStore.isFavorite(root.games[i]))
+                list.push(root.games[i])
+        }
+        return list.length ? list : root.takeGames(root.games, 0, 12)
+    }
+    readonly property var newGames: root.takeGames(root.games, Math.max(0, root.games.length - 12), 12)
+    readonly property bool friendsAvailable: Boolean(ShellStore.socialCapabilities && ShellStore.socialCapabilities.friendsAvailable)
+    readonly property int railGap: 14
+    readonly property int railInnerWidth: Math.max(200, contentFlick.width - 48)
+    readonly property int homeTileCount: {
+        const fit = Math.max(1, Math.floor((root.railInnerWidth + root.railGap) / (112 + root.railGap)))
+        return Math.max(1, Math.min(fit, 10))
+    }
+    onHomeTileCountChanged: root.focusIndex = Math.min(root.focusIndex,
+        root.focusZone === 0 ? 1 : Math.max(0, root.zoneGames(root.focusZone).length - 1))
+    readonly property int homeTileWidth: Math.max(112, Math.floor((root.railInnerWidth - root.railGap * (root.homeTileCount - 1)) / root.homeTileCount))
+    readonly property int homeTileHeight: Math.round(root.homeTileWidth * 168 / 112)
+
+    function takeGames(source, start, limit) {
+        const list = source || []
+        const result = []
+        for (let index = start; index < list.length && result.length < limit; ++index)
+            result.push(list[index])
+        return result
+    }
+
+    ArtworkSource {
+        id: heroArtworkSource
+        sourceUrl: root.heroArtwork
+        active: root.active
+    }
+
+    function heroMeta() {
+        const game = root.heroGame
+        if (!game)
+            return qsTr("Sign in and sync your library to continue a game.")
+        const last = DesktopTokens.relativeLastPlayed(game.lastPlayed, root.lastPlayedNowMs)
+        const hours = game.hoursPlayed ? qsTr("%1 h played").arg(game.hoursPlayed) : ""
+        if (last !== "" && hours !== "")
+            return last + " · " + hours
+        if (last !== "")
+            return last
+        if (hours !== "")
+            return hours
+        return qsTr("Ready to stream from your library")
+    }
+
+    function streamChip() {
+        const res = String(ShellStore.settings.resolution || "")
+        const fps = Number(ShellStore.settings.fps || 0)
+        const codec = String(ShellStore.settings.codec || "auto").toUpperCase()
+        const parts = []
+        if (res.indexOf("x") > 0)
+            parts.push(res.split("x")[1] + "p")
+        if (fps > 0)
+            parts.push(fps + " fps")
+        if (codec !== "")
+            parts.push(codec)
+        return parts.length ? parts.join(" · ") : qsTr("Stream ready")
+    }
+
+    function zoneGames(zone) {
+        const games = zone === 1 ? root.jumpGames : zone === 2 ? root.favoriteGames : root.newGames
+        return root.takeGames(games, 0, root.homeTileCount)
+    }
+
+    component HomePosters: Row {
+        id: rail
+        required property int zone
+        readonly property var games: root.zoneGames(zone)
+        y: 30
+        width: parent.width
+        spacing: root.railGap
+
+        Repeater {
+            model: root.homeTileCount
+            Loader {
+                id: slot
+                required property int index
+                readonly property var game: rail.games[index] || null
+                visible: game !== null || root.catalogLoading
+                z: item ? item.z : 0
+                width: root.homeTileWidth
+                height: root.homeTileHeight
+                sourceComponent: game ? poster : root.catalogLoading ? skeleton : null
+
+                Component {
+                    id: skeleton
+                    DesktopPosterSkeleton {}
+                }
+                Component {
+                    id: poster
+                    DesktopHomePoster {
+                        game: slot.game
+                        tileWidth: root.homeTileWidth
+                        tileHeight: root.homeTileHeight
+                        current: root.focusZone === rail.zone && root.focusIndex === slot.index
+                        onPointed: root.setSelection(rail.zone, slot.index)
+                        onActivated: root.openGame(slot.game)
+                        onPlayRequested: root.playRequested(slot.game)
+                    }
+                }
+            }
+        }
+    }
+
+    function setSelection(zone, index) {
+        root.focusZone = Math.max(0, Math.min(3, zone))
+        const count = root.focusZone === 0 ? 2 : root.zoneGames(root.focusZone).length
+        root.focusIndex = Math.max(0, Math.min(Math.max(0, count - 1), index))
+        root.ensureSelectionVisible()
+    }
+
+    function ensureSelectionVisible() {
+        if (root.focusZone <= 1) {
+            if (contentFlick.contentY > 32)
+                contentFlick.contentY = 0
+            return
+        }
+        const zoneTop = root.focusZone === 2
+            ? (heroRow.height + 18 + jumpRail.height + 18)
+            : (heroRow.height + 18 + jumpRail.height + 18 + playingRail.height + 18)
+        const zoneBottom = zoneTop + 30 + root.homeTileHeight
+        if (zoneBottom > contentFlick.contentY + contentFlick.height - 12)
+            contentFlick.contentY = Math.min(contentFlick.contentHeight - contentFlick.height,
+                                             zoneBottom - contentFlick.height + 12)
+        else if (zoneTop < contentFlick.contentY + 12)
+            contentFlick.contentY = Math.max(0, zoneTop - 12)
+    }
+
+    function moveHorizontal(delta) {
+        const count = root.focusZone === 0 ? 2 : root.zoneGames(root.focusZone).length
+        if (count <= 0)
+            return
+        root.setSelection(root.focusZone, Math.max(0, Math.min(count - 1, root.focusIndex + delta)))
+    }
+
+    function moveVertical(delta) {
+        const nextZone = Math.max(0, Math.min(3, root.focusZone + delta))
+        if (nextZone === root.focusZone)
+            return
+        let nextIndex = root.focusIndex
+        if (nextZone === 0)
+            nextIndex = Math.min(1, Math.round(root.focusIndex / 4))
+        else if (root.focusZone === 0)
+            nextIndex = Math.min(8, root.focusIndex * 2)
+        root.setSelection(nextZone, nextIndex)
+    }
+
+    function openGame(game) {
+        if (!game)
+            return
+        root.gameRequested(game)
+    }
+
+    function startHero() {
+        if (!root.heroGame)
+            return
+        ShellStore.selectedGame = root.heroGame
+        if (ShellStore.signedIn)
+            ShellStore.launchSelectedGame(false)
+        else
+            AppController.navigate("sign-in")
+    }
+
+    function openFriends() {
+        AppController.showOverlay("friends")
+    }
+
+    function activateSelection() {
+        if (root.focusZone === 0) {
+            if (root.focusIndex === 0)
+                root.startHero()
+            else if (root.focusIndex === 1)
+                root.openGame(root.heroGame)
+            return
+        }
+        const selectedGames = root.zoneGames(root.focusZone)
+        if (selectedGames.length > root.focusIndex)
+            root.openGame(selectedGames[root.focusIndex])
+    }
+
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_Left) {
+            root.moveHorizontal(-1)
+        } else if (event.key === Qt.Key_Right) {
+            root.moveHorizontal(1)
+        } else if (event.key === Qt.Key_Up) {
+            root.moveVertical(-1)
+        } else if (event.key === Qt.Key_Down) {
+            root.moveVertical(1)
+        } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+            root.activateSelection()
+        } else {
+            return
+        }
+        event.accepted = true
+    }
+
+    Flickable {
+        id: contentFlick
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: Math.max(height, homeColumn.implicitHeight + 28)
+        clip: true
+        interactive: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickDeceleration: 5200
+        maximumFlickVelocity: 2200
+        Accessible.role: Accessible.Pane
+
+        Column {
+            id: homeColumn
+            x: 24
+            y: 18
+            width: contentFlick.width - 48
+            spacing: 18
+
+            Item {
+                id: heroRow
+                width: parent.width
+                height: 262
+
+                Item {
+                    id: heroCard
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.right: parent.right
+                    height: 262
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 24
+                        color: "#191B22"
+                    }
+                    Rectangle {
+                        id: heroMask
+                        anchors.fill: parent
+                        radius: 24
+                        color: "white"
+                        visible: false
+                        layer.enabled: true
+                    }
+
+                    Item {
+                        anchors.fill: parent
+                        layer.enabled: true
+                        layer.smooth: true
+                        layer.effect: MultiEffect {
+                            maskEnabled: true
+                            maskSource: heroMask
+                            maskThresholdMin: 0.25
+                            maskSpreadAtMin: 0.2
+                        }
+
+                        Image {
+                            anchors.fill: parent
+                            source: heroArtworkSource.resolvedUrl
+                            onStatusChanged: heroArtworkSource.reportImageStatus(status, source)
+                            fillMode: Image.PreserveAspectCrop
+                            sourceSize: DesktopTokens.artworkSourceSize(width, height, Screen.devicePixelRatio)
+                            asynchronous: true
+                            cache: true
+                        }
+                        Rectangle {
+                            anchors.fill: parent
+                            gradient: Gradient {
+                                orientation: Gradient.Horizontal
+                                GradientStop { position: 0; color: "#EB060912" }
+                                GradientStop { position: 0.62; color: "#4D060912" }
+                                GradientStop { position: 1; color: "#1A060912" }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        anchors.fill: parent
+                        color: "transparent"
+                        border.width: 1
+                        border.color: "#29FFFFFF"
+                        radius: 24
+                    }
+
+                    Column {
+                        x: 22
+                        width: parent.width - 44
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 22
+                        spacing: 14
+
+                        Text {
+                            text: qsTr("CONTINUE PLAYING")
+                            color: DesktopTokens.focus
+                            font.family: Theme.monoFont
+                            font.pixelSize: 10
+                            font.weight: Font.DemiBold
+                            font.letterSpacing: 1
+                        }
+
+                        Column {
+                            width: parent.width
+                            spacing: 6
+                            Text {
+                                width: parent.width
+                                elide: Text.ElideRight
+                                text: root.catalogLoading ? qsTr("Loading…")
+                                    : root.heroGame ? String(root.heroGame.title || qsTr("Game")) : qsTr("No games yet")
+                                color: "#FFFFFF"
+                                font.family: Theme.displayFont
+                                font.pixelSize: 34
+                                font.weight: Font.Black
+                                font.letterSpacing: -1
+                            }
+                            Text {
+                                width: parent.width
+                                elide: Text.ElideRight
+                                text: root.heroMeta()
+                                opacity: root.catalogLoading ? 0 : 1
+                                color: "#B8FFFFFF"
+                                font.family: Theme.bodyFont
+                                font.pixelSize: 13
+                                font.weight: Font.DemiBold
+                            }
+                        }
+
+                        Row {
+                            spacing: 9
+                            opacity: root.catalogLoading ? 0 : 1
+                            enabled: !root.catalogLoading
+
+                            Rectangle {
+                                id: startButton
+                                width: 158
+                                height: 38
+                                radius: 10
+                                color: startTap.pressed ? "#D9FFFFFF" : "#F2FFFFFF"
+                                border.width: root.focusZone === 0 && root.focusIndex === 0 && AppController.inputMode !== "pointer" ? 2 : 0
+                                border.color: "#FFFFFF"
+
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: 8
+                                    DesktopGlyph { anchors.verticalCenter: parent.verticalCenter; width: 11; height: 11; icon: "desktop-play.svg" }
+                                    Text { text: qsTr("Start"); color: "#0B0F1A"; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.ExtraBold }
+                                    KeyboardGlyph { shortcut: "Enter"; keySize: 20; ink: "#0B0F1A"; Accessible.name: qsTr("ENTER") }
+                                }
+                                HoverHandler { id: startHover; cursorShape: Qt.PointingHandCursor; onHoveredChanged: if (hovered) root.setSelection(0, 0) }
+                                TapHandler { id: startTap; onTapped: root.startHero() }
+                            }
+
+                            Rectangle {
+                                id: detailsButton
+                                width: 81
+                                height: 38
+                                radius: 10
+                                color: detailsHover.hovered ? "#2EFFFFFF" : "#1FFFFFFF"
+                                border.width: root.focusZone === 0 && root.focusIndex === 1 && AppController.inputMode !== "pointer" ? 2 : 1
+                                border.color: root.focusZone === 0 && root.focusIndex === 1 && AppController.inputMode !== "pointer" ? "#FFFFFF" : "#33FFFFFF"
+                                Text { anchors.centerIn: parent; text: qsTr("Details"); color: "#FFFFFF"; font.family: Theme.bodyFont; font.pixelSize: 14; font.weight: Font.Bold }
+                                HoverHandler { id: detailsHover; cursorShape: Qt.PointingHandCursor; onHoveredChanged: if (hovered) root.setSelection(0, 1) }
+                                TapHandler { onTapped: root.openGame(root.heroGame) }
+                                Behavior on color { ColorAnimation { duration: AppController.reducedMotion ? 0 : 90 } }
+                            }
+
+                            Rectangle {
+                                width: 182
+                                height: 38
+                                radius: 10
+                                color: "#59000000"
+                                border.width: 1
+                                border.color: "#1FFFFFFF"
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: 8
+                                    Rectangle { width: 6; height: 6; radius: 3; color: "#1DB954" }
+                                    Text { text: root.streamChip(); color: "#CCFFFFFF"; font.family: Theme.monoFont; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 0.4 }
+                                }
+                            }
+                        }
+                    }
+                }
+
+
+            }
+
+            Item {
+                id: jumpRail
+                width: parent.width
+                height: 30 + root.homeTileHeight
+                Text { text: qsTr("Jump back in"); color: "#FFFFFF"; font.family: Theme.displayFont; font.pixelSize: 16; font.weight: Font.Black; font.letterSpacing: -0.2 }
+                Row {
+                    objectName: "desktopHomeIconGuide"
+                    anchors.right: seeJumpLabel.left; anchors.rightMargin: 16; y: 1
+                    spacing: 5
+                    Image {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 12; height: 12
+                        source: "qrc:/qt/qml/OpenNOW/res/icons/desktop-info.svg"
+                        sourceSize: Qt.size(32, 32)
+                    }
+                    Text {
+                        text: qsTr("What the icons mean")
+                        color: iconGuideHover.hovered ? Qt.lighter(Theme.focus, 1.2) : Theme.focus
+                        font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Bold
+                    }
+                    HoverHandler { id: iconGuideHover; cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: AppController.showOverlay("desktop-icon-guide") }
+                }
+                Text {
+                    id: seeJumpLabel
+                    anchors.right: parent.right; y: 1
+                    text: root.games.length > 0 ? qsTr("See all %1  ›").arg(root.games.length) : qsTr("See all  ›")
+                    color: seeJump.hovered ? "#B8FFFFFF" : "#80FFFFFF"
+                    font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Bold
+                    HoverHandler { id: seeJump; cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: root.routeRequested("library") }
+                }
+                HomePosters { zone: 1 }
+            }
+
+            Item {
+                id: playingRail
+                width: parent.width
+                height: 30 + root.homeTileHeight
+                Text { text: qsTr("Favourites"); color: "#FFFFFF"; font.family: Theme.displayFont; font.pixelSize: 16; font.weight: Font.Black; font.letterSpacing: -0.2 }
+                Text {
+                    anchors.right: parent.right; y: 1
+                    text: qsTr("See all  ›")
+                    color: seeFriends.hovered ? "#B8FFFFFF" : "#80FFFFFF"
+                    font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Bold
+                    HoverHandler { id: seeFriends; cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: root.routeRequested("library") }
+                }
+                HomePosters { zone: 2 }
+            }
+
+            Item {
+                id: newRail
+                width: parent.width
+                height: 30 + root.homeTileHeight
+                Text { text: qsTr("New in your library"); color: "#FFFFFF"; font.family: Theme.displayFont; font.pixelSize: 16; font.weight: Font.Black; font.letterSpacing: -0.2 }
+                Text {
+                    anchors.right: parent.right; y: 1
+                    text: qsTr("See all  ›")
+                    color: seeNew.hovered ? "#B8FFFFFF" : "#80FFFFFF"
+                    font.family: Theme.bodyFont; font.pixelSize: 11; font.weight: Font.Bold
+                    HoverHandler { id: seeNew; cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: root.routeRequested("library") }
+                }
+                HomePosters { zone: 3 }
+            }
+        }
+    }
+
+    Component.onCompleted: {
+        root.focusZone = 0
+        root.focusIndex = Math.max(0, Math.min(1, ShellStore.focusIndex("desktop-home")))
+        if (root.active)
+            Qt.callLater(root.forceActiveFocus)
+    }
+    onFocusIndexChanged: ShellStore.rememberFocus("desktop-home", focusIndex)
+}

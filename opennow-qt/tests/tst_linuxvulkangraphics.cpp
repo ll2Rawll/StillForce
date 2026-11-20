@@ -1,0 +1,555 @@
+#include "streaming/rendering/LinuxVulkanGraphics.h"
+
+#include <QGuiApplication>
+#include <QProcess>
+#include <QQmlApplicationEngine>
+#include <QQuickWindow>
+#include <QScopeGuard>
+#include <QSignalSpy>
+#include <QTemporaryDir>
+#include <QTest>
+#include <private/qquickwindow_p.h>
+#include <rhi/qrhi.h>
+#include <rhi/qrhi_platform.h>
+
+#include <atomic>
+#include <limits>
+
+using LinuxVulkanGraphics::Device;
+
+namespace {
+class WindowExposureObserver final : public QObject
+{
+public:
+    bool exposed = false;
+
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override
+    {
+        if (qobject_cast<QQuickWindow *>(object) && event->type() == QEvent::Show)
+            exposed = true;
+        return false;
+    }
+};
+
+OpenNowStreamerVulkanDeviceInfo deviceInfo()
+{
+    OpenNowStreamerVulkanDeviceInfo info{};
+    info.version = OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION;
+    info.struct_size = sizeof(info);
+    info.instance = reinterpret_cast<void *>(1);
+    info.physical_device = reinterpret_cast<void *>(2);
+    info.device = reinterpret_cast<void *>(3);
+    info.graphics_queue = reinterpret_cast<void *>(4);
+    info.graphics_queue_family_index = 2;
+    info.graphics_queue_index = 0;
+    info.api_version = VK_API_VERSION_1_3;
+    return info;
+}
+
+OpenNowStreamerGraphicsContext graphicsContext(const OpenNowStreamerVulkanDeviceInfo &info)
+{
+    OpenNowStreamerGraphicsContext context{};
+    context.version = OPENNOW_STREAMER_GRAPHICS_CONTEXT_VERSION;
+    context.struct_size = sizeof(context);
+    context.graphics_api = OPENNOW_STREAMER_GRAPHICS_API_VULKAN;
+    context.instance = info.instance;
+    context.physical_device = info.physical_device;
+    context.device = info.device;
+    context.queue = info.graphics_queue;
+    context.queue_family_index = info.graphics_queue_family_index;
+    return context;
+}
+}
+
+class LinuxVulkanGraphicsTest final : public QObject
+{
+    Q_OBJECT
+
+private slots:
+    void initialPropertiesKeepVisibleQmlRootHidden()
+    {
+        WindowExposureObserver observer;
+        qGuiApp->installEventFilter(&observer);
+        QQmlApplicationEngine engine;
+        engine.setInitialProperties({{QStringLiteral("visible"), false},
+                                     {QStringLiteral("visibility"), QWindow::Hidden}});
+        engine.loadData("import QtQuick\nWindow { visible: true; visibility: Window.Windowed; width: 320; height: 240 }");
+        QCOMPARE(engine.rootObjects().size(), 1);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QCoreApplication::processEvents();
+        QVERIFY(!window->isVisible());
+        QVERIFY(!observer.exposed);
+        if (window->rendererInterface()->graphicsApi() == QSGRendererInterface::Software) {
+            QQuickWindow neverExposed;
+            QVERIFY(!neverExposed.isVisible());
+            QCOMPARE(window->isSceneGraphInitialized(), neverExposed.isSceneGraphInitialized());
+        } else {
+            QVERIFY(!window->isSceneGraphInitialized());
+        }
+        QCOMPARE(window->visibility(), QWindow::Hidden);
+        window->create();
+        QCoreApplication::processEvents();
+        QVERIFY(!window->isVisible());
+        QVERIFY(!observer.exposed);
+        if (window->rendererInterface()->graphicsApi() != QSGRendererInterface::Software)
+            QVERIFY(!window->isSceneGraphInitialized());
+        window->show();
+        QTRY_VERIFY(window->isVisible());
+    }
+
+    void validatesDeviceContract()
+    {
+        const auto valid = deviceInfo();
+        QVERIFY(Device::validInfo(valid));
+        auto info = valid;
+        info.version++;
+        QVERIFY(!Device::validInfo(info));
+        info = valid;
+        info.struct_size--;
+        QVERIFY(!Device::validInfo(info));
+        info = valid;
+        info.api_version = VK_API_VERSION_1_0;
+        QVERIFY(!Device::validInfo(info));
+        info = valid;
+        info.graphics_queue_family_index = VK_QUEUE_FAMILY_IGNORED;
+        QVERIFY(!Device::validInfo(info));
+        info = valid;
+        info.graphics_queue_index = std::numeric_limits<uint32_t>::max();
+        QVERIFY(!Device::validInfo(info));
+        for (auto member : {&OpenNowStreamerVulkanDeviceInfo::instance,
+                            &OpenNowStreamerVulkanDeviceInfo::physical_device,
+                            &OpenNowStreamerVulkanDeviceInfo::device,
+                            &OpenNowStreamerVulkanDeviceInfo::graphics_queue}) {
+            info = valid;
+            info.*member = nullptr;
+            QVERIFY(!Device::validInfo(info));
+        }
+    }
+
+    void rejectsNonVulkanSceneGraph_data()
+    {
+        QTest::addColumn<int>("graphicsApi");
+        QTest::newRow("software") << int(QSGRendererInterface::Software);
+        QTest::newRow("opengl") << int(QSGRendererInterface::OpenGL);
+        QTest::newRow("null") << int(QSGRendererInterface::Null);
+        QTest::newRow("unknown") << int(QSGRendererInterface::Unknown);
+    }
+
+    void rejectsNonVulkanSceneGraph()
+    {
+        QFETCH(int, graphicsApi);
+        static QSGRendererInterface::GraphicsApi actualApi;
+        actualApi = QSGRendererInterface::GraphicsApi(graphicsApi);
+        Device::Api api;
+        api.sceneGraphDevice = [](QQuickWindow *) {
+            return Device::SceneGraphDevice{actualApi, std::nullopt};
+        };
+        Device device(api);
+        QQuickWindow window;
+        QVERIFY(!device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().contains(QStringLiteral("Vulkan")));
+    }
+
+    void rejectsCpuVulkanDevice()
+    {
+        Device::Api api;
+        api.sceneGraphDevice = [](QQuickWindow *) {
+            VkPhysicalDeviceProperties properties{};
+            properties.deviceType = VK_PHYSICAL_DEVICE_TYPE_CPU;
+            return Device::SceneGraphDevice{QSGRendererInterface::Vulkan, properties};
+        };
+        Device device(api);
+        QQuickWindow window;
+        QVERIFY(!device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().contains(QStringLiteral("CPU")));
+    }
+
+    void rejectsUnqueriedVulkanDevice()
+    {
+        Device::Api api;
+        api.sceneGraphDevice = [](QQuickWindow *) {
+            return Device::SceneGraphDevice{QSGRendererInterface::Vulkan, std::nullopt};
+        };
+        Device device(api);
+        QQuickWindow window;
+        QVERIFY(!device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().contains(QStringLiteral("physical device")));
+    }
+
+    void validatesPhysicalDeviceType_data()
+    {
+        QTest::addColumn<int>("deviceType");
+        QTest::addColumn<bool>("accepted");
+        QTest::newRow("integrated") << int(VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) << true;
+        QTest::newRow("discrete") << int(VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) << true;
+        QTest::newRow("virtual") << int(VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU) << true;
+        QTest::newRow("other") << int(VK_PHYSICAL_DEVICE_TYPE_OTHER) << false;
+        QTest::newRow("unknown") << int(VK_PHYSICAL_DEVICE_TYPE_MAX_ENUM) << false;
+    }
+
+    void validatesPhysicalDeviceType()
+    {
+        QFETCH(int, deviceType);
+        QFETCH(bool, accepted);
+        static VkPhysicalDeviceType actualType;
+        actualType = VkPhysicalDeviceType(deviceType);
+        Device::Api api;
+        api.sceneGraphDevice = [](QQuickWindow *) {
+            VkPhysicalDeviceProperties properties{};
+            properties.deviceType = actualType;
+            return Device::SceneGraphDevice{QSGRendererInterface::Vulkan, properties};
+        };
+        Device device(api);
+        QQuickWindow window;
+        QCOMPARE(device.validateHardwareRendering(&window), accepted);
+        QCOMPARE(device.lastError().isEmpty(), accepted);
+        QVERIFY(!device.handle());
+    }
+
+    void graphicsOnlyDeviceIsRevalidatedAfterReinitialization()
+    {
+        static int queries = 0;
+        queries = 0;
+        Device::Api api;
+        api.sceneGraphDevice = [](QQuickWindow *) {
+            VkPhysicalDeviceProperties properties{};
+            properties.deviceType = ++queries == 2 ? VK_PHYSICAL_DEVICE_TYPE_CPU
+                                                   : VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+            return Device::SceneGraphDevice{QSGRendererInterface::Vulkan, properties};
+        };
+        Device device(api);
+        QQuickWindow window;
+        QVERIFY(!device.handle());
+        QVERIFY(device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().isEmpty());
+        QVERIFY(!device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().contains(QStringLiteral("CPU")));
+        QVERIFY(device.validateHardwareRendering(&window));
+        QVERIFY(device.lastError().isEmpty());
+        QCOMPARE(queries, 3);
+        QVERIFY(!device.handle());
+    }
+
+    void fallbackInstanceEnablesAdvertisedHdrColorspace()
+    {
+        if (QGuiApplication::platformName() == QStringLiteral("offscreen"))
+            QSKIP("The offscreen platform has no Vulkan surface");
+        Device device;
+        QQuickWindow window;
+        QVERIFY(device.adoptFallback(&window));
+        QVERIFY(!device.handle());
+        auto *instance = window.vulkanInstance();
+        QVERIFY(instance);
+        QVERIFY(instance->isValid());
+        QVERIFY(instance->apiVersion() >= QVersionNumber(1, 1));
+        const QByteArray extension("VK_EXT_swapchain_colorspace");
+        QCOMPARE(instance->extensions().contains(extension), instance->supportedExtensions().contains(extension));
+        QVERIFY(!window.isVisible());
+    }
+
+    void validatesActualFallbackDeviceAfterSceneGraphRecreation()
+    {
+        if (QGuiApplication::platformName() == QStringLiteral("offscreen")
+                || QGuiApplication::platformName() == QStringLiteral("minimal"))
+            QSKIP("A Vulkan-capable window system is required for physical-device queries.");
+        Device device;
+        std::atomic_int initialized{0};
+        std::atomic_bool correct{true};
+        QString failure;
+        bool validationRequired = true;
+        QQuickWindow window;
+        window.resize(320, 240);
+        window.setPersistentGraphics(false);
+        window.setPersistentSceneGraph(false);
+        QVERIFY2(device.adoptFallback(&window), qPrintable(device.lastError()));
+        QVERIFY(!device.handle());
+        connect(&window, &QQuickWindow::sceneGraphInitialized, &window, [&] {
+            validationRequired = true;
+        }, Qt::DirectConnection);
+        connect(&window, &QQuickWindow::beforeRendering, &window, [&] {
+            if (!validationRequired) return;
+            validationRequired = false;
+            auto *rhi = window.rhi();
+            if (!rhi || rhi->backend() != QRhi::Vulkan) {
+                failure = QStringLiteral("The recreated scene graph has no Vulkan QRhi.");
+                correct.store(false);
+            } else {
+                const auto *handles = static_cast<const QRhiVulkanNativeHandles *>(rhi->nativeHandles());
+                VkPhysicalDeviceProperties properties{};
+                handles->inst->functions()->vkGetPhysicalDeviceProperties(handles->physDev, &properties);
+                const bool hardware = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+                    || properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+                    || properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU;
+                if (device.validateHardwareRendering(&window) != hardware
+                        || (hardware != device.lastError().isEmpty())) {
+                    failure = QStringLiteral("Device type %1: %2").arg(int(properties.deviceType))
+                        .arg(device.lastError());
+                    correct.store(false);
+                }
+            }
+            initialized.fetch_add(1);
+        }, Qt::DirectConnection);
+        QSignalSpy invalidated(&window, &QQuickWindow::sceneGraphInvalidated);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTRY_VERIFY(initialized.load() > 0);
+        QVERIFY2(correct.load(), qPrintable(failure));
+        window.hide();
+        window.releaseResources();
+        QTRY_VERIFY(!invalidated.isEmpty());
+        const int previous = initialized.load();
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTRY_VERIFY(initialized.load() > previous);
+        QVERIFY2(correct.load(), qPrintable(failure));
+        QVERIFY(!device.handle());
+    }
+
+    void waylandSurfaceLifecycle()
+    {
+#ifdef OPENNOW_WINDOWTHEME_COMPOSITOR
+        QTemporaryDir runtime;
+        QVERIFY(runtime.isValid());
+        auto environment = QProcessEnvironment::systemEnvironment();
+        environment.insert("XDG_RUNTIME_DIR", runtime.path());
+        environment.insert("QT_QPA_PLATFORM", "offscreen");
+        QProcess compositor;
+        compositor.setProcessEnvironment(environment);
+        compositor.start(QStringLiteral(OPENNOW_WINDOWTHEME_COMPOSITOR));
+        const auto cleanup = qScopeGuard([&] {
+            compositor.terminate();
+            if (!compositor.waitForFinished(2000)) {
+                compositor.kill();
+                compositor.waitForFinished();
+            }
+        });
+        QVERIFY(compositor.waitForStarted());
+        QVERIFY(compositor.waitForReadyRead(5000));
+        QVERIFY(compositor.readAllStandardOutput().contains("READY"));
+        environment.insert("QT_QPA_PLATFORM", "wayland");
+        environment.insert("QT_WAYLAND_SHELL_INTEGRATION", "xdg-shell");
+        environment.insert("WAYLAND_DISPLAY", "opennow-windowtheme-test");
+        QProcess client;
+        client.setProcessEnvironment(environment);
+        client.start(QCoreApplication::applicationFilePath(),
+                     {"waylandSwapchainReleasedBeforeNativeHide", "-nocrashhandler"});
+        QVERIFY(client.waitForFinished(10000));
+        const auto diagnostics = client.readAllStandardOutput() + client.readAllStandardError();
+        QVERIFY2(client.exitStatus() == QProcess::NormalExit && client.exitCode() == 0,
+                 diagnostics.constData());
+        QVERIFY2(!diagnostics.contains("destroyed while proxies still attached"), diagnostics.constData());
+        QVERIFY2(!diagnostics.contains("destroyed queue"), diagnostics.constData());
+#else
+        QSKIP("Qt Wayland Compositor is unavailable");
+#endif
+    }
+
+    void waylandSwapchainReleasedBeforeNativeHide_data()
+    {
+        QTest::addColumn<bool>("fullscreen");
+        QTest::newRow("windowed") << false;
+        QTest::newRow("fullscreen") << true;
+    }
+
+    void waylandSwapchainReleasedBeforeNativeHide()
+    {
+        if (!QGuiApplication::platformName().startsWith(QStringLiteral("wayland")))
+            QSKIP("Requires a Wayland compositor");
+        QFETCH(bool, fullscreen);
+        Device device;
+        QQmlApplicationEngine engine;
+        engine.loadData("import QtQuick\nWindow { id: root; width: 320; height: 240; property bool overlayOpen: false; Rectangle { anchors.fill: parent; color: 'blue' } Rectangle { anchors.centerIn: parent; width: 40; height: 40; color: 'white'; visible: root.overlayOpen } }");
+        QCOMPARE(engine.rootObjects().size(), 1);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY2(device.adoptFallback(window), qPrintable(device.lastError()));
+        QSignalSpy invalidated(window, &QQuickWindow::sceneGraphInvalidated);
+        QSignalSpy swapped(window, &QQuickWindow::frameSwapped);
+        int hides = 0;
+        connect(window, &QWindow::visibleChanged, window, [&](bool visible) {
+            if (visible) return;
+            ++hides;
+            QVERIFY(window->handle());
+            QVERIFY(QVulkanInstance::surfaceForWindow(window));
+            auto *d = QQuickWindowPrivate::get(window);
+            QVERIFY2(!d->swapchain, "The swapchain must be released before Wayland destroys its Vulkan surface");
+            QVERIFY(!d->hasActiveSwapchain);
+            QVERIFY(!d->hasRenderableSwapchain);
+        });
+        for (int cycle = 0; cycle < 5; ++cycle) {
+            swapped.clear();
+            window->setProperty("overlayOpen", bool(cycle % 2));
+            if (fullscreen) window->showFullScreen();
+            else window->show();
+            QVERIFY(QTest::qWaitForWindowExposed(window));
+            QTRY_VERIFY(!swapped.isEmpty());
+            const auto image = window->grabWindow();
+            QVERIFY(!image.isNull());
+            QCOMPARE(image.pixelColor(image.width() / 2, image.height() / 2),
+                     cycle % 2 ? QColor(Qt::white) : QColor(Qt::blue));
+            auto *d = QQuickWindowPrivate::get(window);
+            QVERIFY(d->swapchain);
+            QVERIFY(d->hasActiveSwapchain);
+            auto *rhi = window->rhi();
+            if (cycle % 2) QVERIFY(window->close());
+            else window->hide();
+            QCOMPARE(hides, cycle + 1);
+            QCOMPARE(window->rhi(), rhi);
+            QVERIFY(invalidated.isEmpty());
+        }
+        swapped.clear();
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QTRY_VERIFY(!swapped.isEmpty());
+        QVERIFY(!window->grabWindow().isNull());
+        delete window;
+        QCOMPARE(hides, 6);
+    }
+
+    void rejectsDifferentQtGraphicsDevice()
+    {
+        const auto info = deviceInfo();
+        const auto valid = graphicsContext(info);
+        QVERIFY(Device::matchesContext(info, valid));
+        for (auto member : {&OpenNowStreamerGraphicsContext::instance,
+                            &OpenNowStreamerGraphicsContext::physical_device,
+                            &OpenNowStreamerGraphicsContext::device,
+                            &OpenNowStreamerGraphicsContext::queue}) {
+            auto context = valid;
+            context.*member = reinterpret_cast<void *>(9);
+            QVERIFY(!Device::matchesContext(info, context));
+        }
+        auto context = valid;
+        context.queue_family_index++;
+        QVERIFY(!Device::matchesContext(info, context));
+        context = valid;
+        context.graphics_api = OPENNOW_STREAMER_GRAPHICS_API_D3D11;
+        QVERIFY(!Device::matchesContext(info, context));
+    }
+
+    void failedBootstrapLeavesNoNativeOwner()
+    {
+        static int destroys = 0;
+        destroys = 0;
+        Device::Api api;
+        api.create = [](OpenNowStreamerVulkanDevice **output) {
+            *output = nullptr;
+            return OPENNOW_STREAMER_GRAPHICS_UNAVAILABLE;
+        };
+        api.destroy = [](OpenNowStreamerVulkanDevice *) {
+            ++destroys;
+            return OPENNOW_STREAMER_OK;
+        };
+        {
+            Device device(api);
+            QVERIFY(!device.initialize());
+            QVERIFY(!device.handle());
+            QVERIFY(!device.lastError().isEmpty());
+            QQuickWindow shell;
+            QVERIFY(!device.adopt(&shell));
+            QVERIFY(!shell.vulkanInstance());
+        }
+        QCOMPARE(destroys, 0);
+        api.create = [](OpenNowStreamerVulkanDevice **output) {
+            *output = reinterpret_cast<OpenNowStreamerVulkanDevice *>(1);
+            return OPENNOW_STREAMER_OK;
+        };
+        api.info = [](const OpenNowStreamerVulkanDevice *, OpenNowStreamerVulkanDeviceInfo *info) {
+            *info = deviceInfo();
+            info->version++;
+            return OPENNOW_STREAMER_OK;
+        };
+        {
+            Device device(api);
+            QVERIFY(!device.initialize());
+            QVERIFY(!device.handle());
+            QCOMPARE(destroys, 1);
+        }
+        QCOMPARE(destroys, 1);
+    }
+
+    void adoptsBeforeExposureAndSurvivesSceneGraphRecreation()
+    {
+        const bool requireVulkanVideo = qEnvironmentVariableIntValue("OPENNOW_TEST_VULKAN_VIDEO") == 1;
+        if (QGuiApplication::platformName() == QStringLiteral("offscreen")
+                || QGuiApplication::platformName() == QStringLiteral("minimal")) {
+            QVERIFY2(!requireVulkanVideo,
+                     "OPENNOW_TEST_VULKAN_VIDEO=1 requires a Vulkan-capable window system.");
+            QSKIP("A Vulkan-capable window system is required for real-device adoption.");
+        }
+        Device device;
+        if (!device.initialize()) {
+            QVERIFY2(!requireVulkanVideo, qPrintable(device.lastError()));
+            QSKIP(qPrintable(device.lastError()));
+        }
+        const auto *owner = device.handle();
+        OpenNowStreamerVulkanDeviceInfo info{};
+        info.version = OPENNOW_STREAMER_VULKAN_DEVICE_INFO_VERSION;
+        info.struct_size = sizeof(info);
+        QCOMPARE(opennow_streamer_vulkan_device_info(owner, &info), OPENNOW_STREAMER_OK);
+
+        std::atomic_bool matches{false};
+        std::atomic_int initialized{0};
+        QQmlApplicationEngine engine;
+        engine.setInitialProperties({{QStringLiteral("visible"), false},
+                                     {QStringLiteral("visibility"), QWindow::Hidden}});
+        engine.loadData("import QtQuick\nWindow { visible: true; visibility: Window.Windowed; width: 320; height: 240; Rectangle { anchors.fill: parent; color: 'blue' } }");
+        QCOMPARE(engine.rootObjects().size(), 1);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(!window->isVisible());
+        QVERIFY(!window->isSceneGraphInitialized());
+        QVERIFY2(device.adopt(window), qPrintable(device.lastError()));
+        QVERIFY(!window->isVisible());
+        QVERIFY(!window->isSceneGraphInitialized());
+        QCOMPARE(reinterpret_cast<void *>(window->vulkanInstance()->vkInstance()), info.instance);
+        window->setPersistentGraphics(false);
+        window->setPersistentSceneGraph(false);
+        connect(window, &QQuickWindow::sceneGraphInitialized, window, [&] {
+            auto *rhi = window->rhi();
+            if (rhi && rhi->backend() == QRhi::Vulkan) {
+                const auto *handles = static_cast<const QRhiVulkanNativeHandles *>(rhi->nativeHandles());
+                auto context = graphicsContext(info);
+                context.instance = reinterpret_cast<void *>(handles->inst->vkInstance());
+                context.physical_device = reinterpret_cast<void *>(handles->physDev);
+                context.device = reinterpret_cast<void *>(handles->dev);
+                context.queue = reinterpret_cast<void *>(handles->gfxQueue);
+                context.queue_family_index = handles->gfxQueueFamilyIdx;
+                matches.store(Device::matchesContext(info, context));
+            }
+            initialized.fetch_add(1);
+        }, Qt::DirectConnection);
+        QSignalSpy invalidated(window, &QQuickWindow::sceneGraphInvalidated);
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QTRY_VERIFY(initialized.load() > 0);
+        QVERIFY(matches.load());
+        QVERIFY(!device.adopt(window));
+        window->hide();
+        window->releaseResources();
+        QTRY_VERIFY(!invalidated.isEmpty());
+        const int previous = initialized.load();
+        window->show();
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QTRY_VERIFY(initialized.load() > previous);
+        QVERIFY(matches.load());
+        QCOMPARE(device.handle(), owner);
+        window->showFullScreen();
+        QTRY_COMPARE(window->visibility(), QWindow::FullScreen);
+        window->showNormal();
+        window->resize(400, 300);
+        QVERIFY(!window->grabWindow().isNull());
+    }
+};
+
+int main(int argc, char **argv)
+{
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+    QGuiApplication application(argc, argv);
+    LinuxVulkanGraphicsTest test;
+    return QTest::qExec(&test, argc, argv);
+}
+
+#include "tst_linuxvulkangraphics.moc"

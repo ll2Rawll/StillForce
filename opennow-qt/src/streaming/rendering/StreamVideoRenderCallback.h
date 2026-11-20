@@ -1,0 +1,42 @@
+#pragma once
+
+#include <QMatrix4x4>
+#include <QRect>
+#include <QVariantMap>
+#include <cstdint>
+
+class QRhi;
+class QRhiCommandBuffer;
+class QRhiRenderTarget;
+class QQuickWindow;
+
+class StreamVideoRenderCallback
+{
+public:
+    virtual ~StreamVideoRenderCallback() = default;
+
+    virtual void initialize(QRhi *rhi,
+                            QRhiCommandBuffer *commandBuffer,
+                            QRhiRenderTarget *renderTarget) = 0;
+    virtual void prepareFrame(QRhiCommandBuffer *commandBuffer) = 0;
+    virtual void setComposition(const QMatrix4x4 &, const QRectF &, const QRectF &, float) {}
+    virtual void setClip(bool, int) {}
+    // factor: 0 = off, 2..4 = generated frames per source interval + 1; refresh rate in Hz.
+    virtual void setFrameGeneration(int, double) {}
+    virtual void setGeneratedFramesOnly(bool) {}
+    virtual void setUpscalingTarget(const QSize &) {}
+    virtual void setFsrUpscaling(bool) {}
+    virtual void setUpscalingEnhancement(int, int) {}
+    virtual bool needsFrame() const { return false; }
+    virtual std::uint64_t nextFrameDeadlineNs() const { return 0; }
+    virtual void frameSwapped() {}
+    virtual void beforeFrameBegin(QQuickWindow *) {}
+    virtual void afterRendering() {}
+    virtual QVariantMap frameGenerationStats() const { return {}; }
+    virtual QVariantMap swapStats() const { return {}; }
+    virtual void setSwapGated(bool, const QString &) {}
+    virtual void recordFrame(QRhiCommandBuffer *commandBuffer,
+                             const QRect &videoViewport) = 0;
+    virtual void finishFrame() = 0;
+    virtual void releaseResources() = 0;
+};

@@ -1,0 +1,551 @@
+import QtQuick
+import OpenNOW
+import OpenNOW.Acceptance 1.0
+
+QtObject {
+    property QtObject productionBoundary: null
+    property Component paletteComponent: Component { DesktopCommandPalette {} }
+    property Component hostComponent: Component { Item {} }
+    property Component shellComponent: Component { DesktopShell {} }
+    property Component cardComponent: Component { DesktopStoreCard {} }
+    property Component shelfComponent: Component { DesktopStoreShelf {} }
+    property Component homeComponent: Component { DesktopHomeScreen {} }
+    property AcceptanceCoreClient client: AcceptanceCoreClient {
+        property string state: "ready"
+        property string lastError: ""
+        property int sequence: 0
+        property var requests: []
+        function markUiReady() {}
+        function logShellDiagnostic(message) {} // No filesystem writes from the isolated mock.
+        function request(method, params, timeout) {
+            const id = "store-test-" + (++sequence)
+            requests.push({id:id, method:method, params:params})
+            return id
+        }
+        function cancel(id) { requestFailed(id, "cancelled", "Cancelled"); return true }
+    }
+    function check(ok, message) { if (!ok) throw new Error("Store pagination: " + message) }
+    function namedChild(item, name) {
+        if (item.objectName === name) return item
+        for (const child of item.children || []) {
+            const found = namedChild(child, name)
+            if (found) return found
+        }
+        return null
+    }
+    function game(id) {
+        return {id:id, uuid:id, title:"Test game " + id, imageUrl:"", heroImageUrl:"",
+            variants:[{id:id, store:"Steam", inLibrary:false}], availableStores:["Steam"], genres:[]}
+    }
+    function page(games, cursor, more) {
+        return {games:games, totalCount:2500, nextCursor:cursor, hasNextPage:more}
+    }
+    function run(screen, status, retry, emptyStatus) {
+        function preservesJsonArrays(boundary) {
+            let preserved = false
+            function observeResponse(id, result) {
+                if (id === "verify-json-boundary") preserved = Array.isArray(result.games)
+            }
+            boundary.responseReceived.connect(observeResponse)
+            boundary.responseReceived("verify-json-boundary", {games:[game("boundary")]})
+            boundary.responseReceived.disconnect(observeResponse)
+            return preserved
+        }
+        check(productionBoundary !== null && preservesJsonArrays(productionBoundary),
+            "CoreClient's JSON response did not preserve arrays")
+        check(preservesJsonArrays(client), "the mock did not preserve CoreClient's JSON array response boundary")
+        const artworkSources = []
+        for (let i = 0; i < 6; ++i) {
+            const source = "https://artwork.test/" + i
+            artworkSources.push(source)
+            ShellStore.retainArtwork(source)
+            ShellStore.scheduleArtworkRetry(source)
+            ShellStore.artworkRetrySources[source].nextAt = 0
+        }
+        const beforeArtwork = client.requests.length
+        ShellStore.retryVisibleArtwork(Date.now())
+        check(client.requests.length === beforeArtwork + 2, "artwork retries were not paced")
+        const failedArtwork = client.requests[beforeArtwork]
+        client.requestFailed(failedArtwork.id, "network", "Offline")
+        check(ShellStore.artworkRetrySources[artworkSources[0]].failures === 2,
+            "artwork failure did not increase backoff")
+        ShellStore.retainArtwork(artworkSources[0])
+        ShellStore.releaseArtwork(artworkSources[0])
+        check(ShellStore.artworkInterests[artworkSources[0]] === 1, "shared artwork interest lost")
+        for (const source of artworkSources) ShellStore.releaseArtwork(source)
+        const afterArtwork = client.requests.length
+        ShellStore.retryVisibleArtwork(Date.now() + 3600000)
+        check(client.requests.length === afterArtwork && Object.keys(ShellStore.artworkRetrySources).length === 0,
+            "hidden artwork kept retrying")
+        check(screen.catalogPrice(game("unpriced")) === "", "invented Available price label")
+        for (const store of ["STEAM", "EPIC", "XBOX", "UPLAY", "EA_APP", "GOG", "BATTLENET", "GAIJIN", "NVIDIA"])
+            check(DesktopTokens.storeIconUrl(store).endsWith(".svg"), "missing store icon " + store)
+        check(DesktopTokens.storeLabel("UPLAY") === "Ubisoft Connect", "raw provider label")
+        check(DesktopTokens.genreLabel("MASSIVELY_MULTIPLAYER") === "Massively Multiplayer", "raw genre label")
+        ShellStore.authSession = {user:{userId:"store-fixture", displayName:"Store Test"}, provider:{idpId:"store-provider", code:"NVIDIA"}}
+        ShellStore.reloadStoreForSession()
+        const first = ShellStore.storeRequestId
+        check(client.requests.find(r => r.id === first).params.limit === 40, "unbounded page requested")
+        check(client.requests.find(r => r.id === first).method === "catalog.store.local", "Store did not use its local index")
+        const storeSkeleton = namedChild(screen, "storeLoadingSkeleton")
+        check(storeSkeleton && storeSkeleton.awaitingGames && storeSkeleton.height > 0,
+            "the initial Store load has no poster skeleton")
+        client.responseReceived(first, page([game("a"),game("b")], "cursor-one", true))
+        check(!storeSkeleton.awaitingGames && storeSkeleton.height === 0, "the Store kept its skeleton after results")
+        check(ShellStore.storeGames.length === 2 && !ShellStore.storeLoading && ShellStore.storeHasMore,
+            "Store automatically continued instead of waiting for demand (games=" + ShellStore.storeGames.length
+            + ", loading=" + ShellStore.storeLoading + ", more=" + ShellStore.storeHasMore
+            + ", error=" + ShellStore.storeError + ")")
+        check(status.text.indexOf("2") >= 0, "progress not visible")
+        const retainedShelf = namedChild(screen, "storeShelf-new")
+        check(retainedShelf !== null, "the first Store shelf was not created")
+        ShellStore.requestStorePage()
+        const second = ShellStore.storeRequestId
+        check(client.requests.find(r => r.id === second).params.cursor === "cursor-one", "cursor not forwarded")
+        client.requestFailed(second, "upstream_error", "Store HTTP 503")
+        check(ShellStore.storeGames.length === 2 && status.text.indexOf("HTTP 503") >= 0, "partial games/error lost")
+        retry.clicked()
+        const retryId = ShellStore.storeRequestId
+        check(client.requests.find(r => r.id === retryId).params.cursor === "cursor-one", "retry skipped failed page")
+        client.responseReceived(retryId, page([game("b"),game("c")], "cursor-two", true))
+        check(ShellStore.storeGames.length === 3, "overlapping pages not deduplicated")
+        check(namedChild(screen, "storeShelf-new") === retainedShelf,
+            "appending a catalog page destroyed an existing shelf and its interaction state")
+        ShellStore.requestStorePage()
+        client.responseReceived(ShellStore.storeRequestId, page([], "", false))
+        check(!ShellStore.storeHasMore && !ShellStore.storeLoading && ShellStore.storeGames.length === 3, "final page did not settle")
+        client.requestFailed("unrelated", "other_error", "Unrelated account error")
+        check(ShellStore.storeError === "", "unrelated error leaked into Store")
+
+        ShellStore.refreshStore("growing index")
+        client.responseReceived(ShellStore.storeRequestId, Object.assign(page([game("old")], "same-offset", true),
+            {source:"store-local",cacheComplete:false}))
+        check(ShellStore.storeWarning !== "", "partial index coverage is visible")
+        const coverageRetryStart = client.requests.length
+        ShellStore.retryStore()
+        check(client.requests.slice(coverageRetryStart).some(call => call.method === "catalog.store.local"),
+            "coverage retry continues the catalog instead of only requesting presentation")
+        client.responseReceived(ShellStore.storeRequestId, Object.assign(page([game("new-exact")], "same-offset", true),
+            {source:"store-local",cacheComplete:true,replace:true}))
+        check(ShellStore.storeGames.length === 1 && ShellStore.storeGames[0].id === "new-exact"
+            && ShellStore.storeState === "ready", "a restarted ranking replaces games and accepts a fresh cursor history")
+        check(ShellStore.storeWarning === "", "complete catalog coverage clears the old advisory")
+        ShellStore.requestStorePage()
+        client.responseReceived(ShellStore.storeRequestId, page([game("old")], "", false))
+        ShellStore.refreshStore("")
+        client.responseReceived(ShellStore.storeRequestId, page([game("a"),game("b"),game("c")], "", false))
+
+        const presentation = ShellStore.storePresentationRequestId
+        client.requestFailed(presentation, "upstream_error", "Banner unavailable")
+        check(ShellStore.storeGames.length === 3 && ShellStore.storeWarning.indexOf("Banner unavailable") >= 0, "chrome failure broke games")
+        const beforePresentationRetry = client.requests.filter(call => call.method === "catalog.store.local").length
+        ShellStore.retryStore()
+        check(ShellStore.storeWarning.indexOf("Banner unavailable") >= 0,
+            "presentation retry cannot hide an unresolved presentation failure")
+        for (const section of ["panels", "filters"])
+            client.responseReceived(ShellStore.storePresentationRequestId, {section:section,items:[]})
+        check(ShellStore.storeWarning.indexOf("Banner unavailable") >= 0,
+            "an unrelated successful presentation section cannot clear the failed section")
+        ShellStore.retryStore()
+        for (const section of ["marquee", "panels", "filters"])
+            client.responseReceived(ShellStore.storePresentationRequestId, {section:section,items:[]})
+        check(ShellStore.storeWarning === "" && client.requests.filter(call => call.method === "catalog.store.local").length === beforePresentationRetry,
+            "presentation-only retry clears its warning only on success and never reloads catalog pages")
+
+        const cachedCount = client.requests.length
+        ShellStore.ensureStore("")
+        check(client.requests.length === cachedCount && ShellStore.storeGames.length === 3, "route re-entry reloaded the catalog")
+        ShellStore.ensureStore("cached search")
+        client.responseReceived(ShellStore.storeRequestId, page([game("search-only")], "", false))
+        ShellStore.ensureStore("")
+        check(ShellStore.storeGames.length === 3 && ShellStore.storeGames[0].id === "a"
+            && !ShellStore.storeLoading, "clearing search did not restore browse cache")
+        ShellStore.ensureStore("", {categoryId:"shelf:0:0"})
+        client.responseReceived(ShellStore.storeRequestId, page([game("category-only")], "", false))
+        const filteredRequestCount = client.requests.filter(r => r.method === "catalog.store.local").length
+        ShellStore.ensureStore("", {})
+        check(ShellStore.storeGames.length === 3 && ShellStore.storeGames[0].id === "a"
+            && client.requests.filter(r => r.method === "catalog.store.local").length === filteredRequestCount, "leaving a category reloaded the browse cache")
+        ShellStore.refreshStore("", true)
+        check(ShellStore.storeLoading && ShellStore.storeGames.length === 3, "manual refresh did not retain artwork")
+        check(client.requests.find(r => r.id === ShellStore.storeRequestId).params.refresh === true, "manual refresh did not request a local index rebuild")
+        client.responseReceived(ShellStore.storeRequestId, page([game("resume")], "resume-next", true))
+        const inFlightCount = client.requests.length
+        ShellStore.ensureStore("")
+        check(client.requests.length === inFlightCount, "route re-entry restarted pagination")
+        ShellStore.ensureStore("interrupt browse")
+        const cancelledSearch = ShellStore.storeRequestId
+        ShellStore.ensureStore("")
+        client.responseReceived(cancelledSearch, page([game("late-search")], "", false))
+        ShellStore.requestStorePage()
+        check(client.requests.find(r => r.id === ShellStore.storeRequestId).params.cursor === "resume-next"
+            && ShellStore.storeGames[0].id === "resume", "cached partial browse did not resume at its cursor")
+        check(client.requests.find(r => r.id === ShellStore.storeRequestId).params.refresh === false, "continuation invalidated disk cache")
+        client.responseReceived(ShellStore.storeRequestId, page([], "", false))
+
+        ShellStore.refreshStore("first search")
+        const stale = ShellStore.storeRequestId
+        const stalePresentation = ShellStore.storePresentationRequestId
+        ShellStore.refreshStore("second search")
+        client.responseReceived(stale, page([game("stale")], "", false))
+        if (stalePresentation) client.responseReceived(stalePresentation, {section:"panels", items:[{id:"stale"}]})
+        check(ShellStore.storeGames.length === 0, "cancelled search mixed results")
+        const search = ShellStore.storeRequestId
+        check(client.requests.find(r => r.id === search).params.searchQuery === "second search", "search context lost")
+        client.requestFailed(search, "graphql_error", "GraphQL dependency failed")
+        check(emptyStatus.text === "GraphQL dependency failed", "initial failure hidden")
+        ShellStore.retryStore()
+        client.responseReceived(ShellStore.storeRequestId, page([game("fresh")], "repeat", true))
+        ShellStore.requestStorePage()
+        client.responseReceived(ShellStore.storeRequestId, page([game("wrong")], "repeat", true))
+        check(ShellStore.storeState === "error" && ShellStore.storeGames.length === 1, "repeated cursor continued")
+
+        // Filtering/ranking belongs to the complete local index, not the
+        // currently materialized games or a second QML substring matcher.
+        ShellStore.ensureStore("fortntie", {genre:"ACTION"})
+        check(client.requests.find(r => r.id === ShellStore.storeRequestId).params.genre === "ACTION", "local facet not forwarded")
+        const ranked = game("fortnite")
+        ranked.title = "Fortnite"
+        client.responseReceived(ShellStore.storeRequestId, {source:"store-local",games:[ranked],
+            totalCount:1,hasNextPage:false,nextCursor:"",facets:{genres:["ACTION","MUSIC"],
+                stores:["EPIC","STEAM"],categories:[{id:"shelf:0:0",label:"All official games",count:90}]}})
+        check(screen.filteredCatalog.length === 1, "ranked match was discarded by UI substring filtering")
+        check(screen.genreOptions.indexOf("MUSIC") >= 0 && screen.categoryOptions.indexOf("shelf:0:0") >= 0,
+            "facets were restricted to visible games")
+
+        const paletteHost = hostComponent.createObject(screen, {width:480, height:320})
+        const palette = paletteComponent.createObject(paletteHost, {opened:true})
+        check(palette !== null, "palette fixture failed to load")
+        palette.query = "fortntie"
+        palette.requestGames()
+        const paletteFirst = palette.searchRequestId
+        const paletteRequest = client.requests.find(r => r.id === paletteFirst)
+        check(paletteRequest.method === "catalog.store.list" && paletteRequest.params.limit === 6
+            && paletteRequest.params.revalidate === true, "palette search was not bounded remote search")
+        palette.query = "cs2"
+        palette.requestGames()
+        client.responseReceived(paletteFirst, {games:[ranked]})
+        check(palette.remoteGames.length === 0, "stale palette search was accepted")
+        client.responseReceived(palette.searchRequestId, {games:[game("cs2")], scope:ShellStore.catalogOwnerState.authScope,
+            catalogRevision:ShellStore.catalogOwnerState.catalogRevision === null ? 0 : ShellStore.catalogOwnerState.catalogRevision})
+        check(palette.gameList.length === 1 && palette.gameList[0].id === "cs2", "palette ignored ranked remote results")
+        palette.query = ""
+        palette.scopeFilter = "actions"
+        palette.ensureCurrentVisible()
+        check(palette.panelWidth <= paletteHost.width - 32 && palette.panelTop + palette.panelHeight <= paletteHost.height - 16,
+            "command palette extends beyond the window")
+        palette.moveCurrent(-1)
+        const paletteViewport = namedChild(palette, "commandPaletteResults")
+        const lastCommand = palette.currentRow()
+        check(paletteViewport && lastCommand && lastCommand.y >= paletteViewport.contentY
+            && lastCommand.y + lastCommand.height <= paletteViewport.contentY + paletteViewport.height + 1,
+            "keyboard selection is outside the command viewport")
+        palette.moveCurrent(1)
+        check(palette.currentRow().y >= paletteViewport.contentY, "wrapped selection was not scrolled back")
+        palette.opened = false
+        palette.destroy()
+        paletteHost.destroy()
+
+        const originalSettings = ShellStore.settings
+        const originalRemotes = ShellStore.remoteSessions
+        ShellStore.applySetting("desktopRailCollapsed", false)
+        ShellStore.remoteSessions = [{status:2, appName:"A very long game name: Complete Edition"}]
+        const originalScale = DesktopTokens.uiScale
+        DesktopTokens.uiScale = 1.4
+        const headerHost = hostComponent.createObject(screen, {width:960, height:540})
+        const shell = shellComponent.createObject(headerHost, {title:"A long translated library heading", subtitle:"A long translated subtitle"})
+        const heading = namedChild(shell, "desktopHeaderHeading")
+        const searchField = namedChild(shell, "desktopHeaderSearch")
+        const resumeButton = namedChild(shell, "desktopHeaderResume")
+        check(resumeButton.visible && heading.x + heading.width <= searchField.x
+            && searchField.x + searchField.width <= resumeButton.x
+            && resumeButton.x + resumeButton.width <= resumeButton.parent.width,
+            "header controls overlap with a pinned sidebar and resumable session")
+        headerHost.width = 800
+        check(heading.width > 0 && heading.x + heading.width <= searchField.x
+            && searchField.x + searchField.width <= resumeButton.x,
+            "header did not adapt to a narrower viewport")
+        const playtime = namedChild(shell, "desktopRemainingPlaytime")
+        const originalSubscription = ShellStore.subscription
+        ShellStore.subscription = {membershipTier:"PERFORMANCE", isUnlimited:false, remainingHours:42.25}
+        check(playtime.text === "42.3 H PLAYTIME LEFT", "remaining playtime was not shown: " + playtime.text)
+        ShellStore.subscription = {membershipTier:"PERFORMANCE", isUnlimited:false, remainingHours:null}
+        check(playtime.text === "", "unknown remaining playtime was shown")
+        ShellStore.subscription = {membershipTier:"ULTIMATE", isUnlimited:true, remainingHours:12}
+        check(playtime.text === "", "unlimited subscription showed a playtime budget")
+        ShellStore.subscription = originalSubscription
+        const sidebar = namedChild(shell, "desktopSidebar")
+        const railScrim = namedChild(shell, "desktopRailScrim")
+        check(!railScrim.visible, "pinned sidebar covered the page with a dismissal scrim")
+        sidebar.closeOverlay()
+        check(ShellStore.settings.desktopRailCollapsed === false && !sidebar.collapsed,
+            "dismissing the sidebar overlay collapsed the pinned sidebar")
+        ShellStore.applySetting("desktopRailCollapsed", true)
+        sidebar.hoverExpanded = true
+        check(sidebar.overlayOpen && railScrim.visible, "hover expansion did not offer outside-click dismissal")
+        sidebar.closeOverlay()
+        check(!sidebar.overlayOpen && !railScrim.visible && ShellStore.settings.desktopRailCollapsed === true,
+            "dismissing the hover overlay changed the collapsed preference")
+        shell.destroy()
+        headerHost.destroy()
+        ShellStore.settings = originalSettings
+        ShellStore.remoteSessions = originalRemotes
+        DesktopTokens.uiScale = originalScale
+
+        for (const mode of ["light", "dark"]) {
+            ShellStore.applySetting("appTheme", mode)
+            for (const scale of [0.9, 1.4]) {
+                DesktopTokens.uiScale = scale
+                const longGame = game("layout")
+                longGame.title = "A much longer game title: Complete Ultimate Edition"
+                const card = cardComponent.createObject(screen, {game:longGame, owned:true})
+                const title = namedChild(card, "storeCardTitle")
+                const metadata = namedChild(card, "storeCardMetadata")
+                check(title.color.toString() === Theme.label.toString(), "Store caption ignores theme")
+                check(title.y >= card.artHeight && metadata.y >= title.y + title.height
+                    && metadata.y + metadata.height <= card.height,
+                    "scaled Store metadata extends outside its card")
+                card.destroy()
+            }
+        }
+        ShellStore.settings = originalSettings
+        DesktopTokens.uiScale = originalScale
+
+        const shelf = shelfComponent.createObject(screen, {width:600,materialized:false,categoryId:"shelf:0:0",totalCount:90})
+        const unloadedShelfHeight = shelf.height
+        check(shelf.awaitingGames && unloadedShelfHeight > 0, "offscreen shelf collapsed before its games loaded")
+        const hiddenRequestCount = client.requests.length
+        shelf.requestVisible()
+        check(client.requests.length === hiddenRequestCount, "offscreen shelf requested games")
+        shelf.materialized = true
+        shelf.requestVisible()
+        check(client.requests.find(r => r.id === shelf.requestId).params.limit === shelf.tileCount,
+            "visible shelf requested more than its visible tiles")
+        const shelfPending = shelf.requestId
+        shelf.materialized = false
+        client.responseReceived(shelfPending, {games:[ranked]})
+        check(shelf.localGames.length === 0, "hidden shelf retained a cancelled response")
+        shelf.materialized = true
+        shelf.requestVisible()
+        client.responseReceived(shelf.requestId, {games:[ranked]})
+        check(!shelf.awaitingGames && shelf.height === unloadedShelfHeight,
+            "loading a shelf changed its reserved height")
+        const loadedShelfRequests = client.requests.length
+        shelf.materialized = false
+        check(shelf.localGames.length === 0, "hidden shelf retained visual model")
+        shelf.materialized = true
+        shelf.requestVisible()
+        check(client.requests.length === loadedShelfRequests && shelf.localGames[0].id === ranked.id,
+            "returning to a shelf repeated the core request")
+        shelf.width = 400
+        shelf.requestVisible()
+        check(client.requests.length === loadedShelfRequests, "shrinking a shelf fetched again")
+        ShellStore.resetStoreShelves()
+        check(shelf.localGames.length === 0 && ShellStore.storeShelfCache.length === 0,
+            "refresh retained stale shelf data")
+        for (let i = 0; i < 30; ++i) ShellStore.cacheStoreShelf("test" + i, 1, [ranked])
+        check(ShellStore.storeShelfCache.length === 24 && ShellStore.cachedStoreShelf("test0", 1) === null,
+            "shelf cache was not bounded")
+        ShellStore.resetStoreShelves()
+        shelf.categoryId = ""
+        shelf.width = 600
+        shelf.games = [ranked]
+        check(shelf.tileWidth < 160, "short final row stretched its posters")
+        shelf.destroy()
+
+        // A pinned/scaled sidebar can leave fewer than five posters' worth of
+        // room. Rows and keyboard navigation must use the same visible bounds.
+        const originalLibrary = ShellStore.catalogGames
+        const originalCatalogState = ShellStore.catalogState
+        const homeGames = []
+        for (let i = 0; i < 14; ++i) homeGames.push(game("home-" + i))
+        ShellStore.catalogGames = []
+        ShellStore.catalogState = "loading"
+        const homeHost = hostComponent.createObject(screen, {width:600,height:500,visible:false})
+        const home = homeComponent.createObject(homeHost, {active:false})
+        check(home !== null, "the Home navigation fixture did not load")
+        check(home.catalogLoading, "Home did not show its initial loading state")
+        ShellStore.catalogGames = homeGames
+        check(!home.catalogLoading, "Home kept its skeleton after the first library page")
+        check(home.homeTileWidth * home.homeTileCount + home.railGap * (home.homeTileCount - 1)
+            <= home.railInnerWidth, "Home forced clipped posters into a narrow content column")
+        home.setSelection(1, 0)
+        for (let i = 0; i < 20; ++i) home.moveHorizontal(1)
+        check(home.focusIndex === home.homeTileCount - 1,
+            "Home keyboard navigation moved to a card that was not displayed")
+        homeHost.width = 380
+        check(home.focusIndex < home.homeTileCount,
+            "shrinking Home left keyboard selection beyond the visible cards")
+        home.destroy()
+        homeHost.destroy()
+        ShellStore.catalogGames = originalLibrary
+        ShellStore.catalogState = originalCatalogState
+
+        const hero = "https://img.nvidiagrid.net/apps/game/TV_BANNER_1.jpg;f=jpg;w=900"
+        const poster = "https://img.nvidiagrid.net/apps/game/GAME_BOX_ART_1.jpg;f=jpg;w=900"
+        check(DesktopTokens.artworkUrl({imageUrl:hero, heroImageUrl:hero}, false) === ""
+            && DesktopTokens.artworkUrl({imageUrl:hero, heroImageUrl:hero}, true) === hero,
+            "legacy wide artwork was not kept out of portrait cards")
+        check(DesktopTokens.artworkUrl({imageUrl:poster, heroImageUrl:hero}, false) === poster,
+            "portrait box art was not selected")
+        const retina = DesktopTokens.artworkSourceSize(132, 198, 2)
+        const resized = DesktopTokens.artworkSourceSize(136, 202, 2)
+        check(retina.width >= 264 && retina.height >= 396
+            && resized.width === retina.width && resized.height === retina.height,
+            "posters did not account for Retina pixels or re-decoded during a small resize")
+
+        // An account switch cancels both channels, and late results cannot leak.
+        ShellStore.retryStore()
+        const oldAccount = ShellStore.storeRequestId
+        const oldChrome = ShellStore.storePresentationRequestId
+        ShellStore.authSession = null
+        ShellStore.reloadStoreForSession()
+        client.responseReceived(oldAccount, page([game("private")], "", false))
+        if (oldChrome) client.responseReceived(oldChrome, {section:"marquee", items:[{title:"private"}]})
+        check(ShellStore.storeGames.length === 0 && ShellStore.storeMarquee.length === 0, "old account results leaked")
+        check(ShellStore.storeBrowseCache === null, "browse cache survived account change")
+        check(client.requests.find(r => r.id === ShellStore.storeRequestId).method === "catalog.public.list", "signed-out path changed")
+        client.responseReceived(ShellStore.storeRequestId, {games:[], totalCount:0})
+        check(ShellStore.storeState === "ready" && !ShellStore.storeLoading, "empty catalog never settled")
+        ShellStore.cancelStoreRequests()
+
+        // Leave a partial-failure state for native screenshot/layout acceptance.
+        ShellStore.authSession = {user:{userId:"store-fixture", displayName:"Store Test"}}
+        ShellStore.reloadStoreForSession()
+        const preview = []
+        for (let i = 0; i < 24; ++i) preview.push(game(String(i)))
+        client.responseReceived(ShellStore.storeRequestId, page(preview, "preview-next", true))
+        ShellStore.requestStorePage()
+        client.requestFailed(ShellStore.storeRequestId, "upstream_error", "Store HTTP 503 — the next catalog page is temporarily unavailable.")
+        ShellStore.cancelStoreRequests()
+        check(status.text.indexOf("24") >= 0 && retry.visible, "partial-error feedback is not actionable")
+        runArtworkEviction(screen)
+        return true
+    }
+
+    function runArtworkEviction(screen) {
+        const source = "https://artwork.test/evicted-png"
+        const cached = String(ArtworkEvictionUrls.cached)
+        const recovered = String(ArtworkEvictionUrls.recovered)
+        const state = Qt.createQmlObject(`import QtQuick; Item {
+            objectName: "artworkEvictionRegression"
+            property bool evictRequested: false
+            property bool evicted: false
+            property bool passed: false
+            property string error: ""
+        }`, screen)
+        const component = Qt.createComponent("qrc:/qt/qml/OpenNOW/qml/components/RoundedArtwork.qml")
+        check(component.status === Component.Ready, "artwork regression component did not load: " + component.errorString())
+        ShellStore.acceptArtworkResult({sourceUrl:source, cached:true, artworkUrl:cached})
+        let card = component.createObject(state, {artwork:source, width:31, height:31, scrimStart:1})
+        const timer = Qt.createQmlObject('import QtQuick; Timer { interval:20; repeat:true }', state)
+        const requests = () => client.requests.filter(r => r.method === "artwork.resolve" && r.params.sourceUrl === source)
+        function imageIn(item) {
+            if (item.source !== undefined && item.status !== undefined) return item
+            for (const child of item.children || []) {
+                const found = imageIn(child)
+                if (found) return found
+            }
+            return null
+        }
+        let phase = 0
+        let errorDeadline = 0
+        const deadline = Date.now() + 4000
+        timer.triggered.connect(function() {
+            try {
+                check(Date.now() < deadline, "deferred artwork eviction timed out in phase " + phase)
+                const image = imageIn(card)
+                check(image !== null, "artwork regression did not create an Image")
+                if (phase === 0) {
+                    if (image.status !== Image.Ready) return
+                    check(requests().length === 0, "cached artwork resolved again before eviction")
+                    state.evictRequested = true
+                    phase = 1
+                } else if (phase === 1) {
+                    if (!state.evicted) return
+                    card.destroy()
+                    // Cross a source-size bucket so Qt cannot reuse the decoded texture.
+                    card = component.createObject(state, {artwork:source, width:95, height:95, scrimStart:1})
+                    errorDeadline = Date.now() + 300
+                    phase = 2
+                } else if (phase === 2) {
+                    if (ShellStore.artworkUrl(source) !== "" && Date.now() < errorDeadline) return
+                    check(ShellStore.artworkUrl(source) === "",
+                        "removed cached PNG was not invalidated after Image.Error, status=" + image.status)
+                    check(requests().length === 0, "Image.Error immediately re-resolved artwork")
+                    const retry = ShellStore.artworkRetrySources[source]
+                    check(retry && retry.failures === 1 && retry.nextAt > Date.now(), "eviction did not enter paced retry")
+                    ShellStore.reportArtworkLoad(source, cached, true)
+                    ShellStore.reportArtworkLoad(source, recovered, true)
+                    check(ShellStore.artworkRetrySources[source].failures === 1, "duplicate or stale image errors extended backoff")
+                    for (let i = 0; i < 20; ++i) ShellStore.requestArtwork(source)
+                    check(requests().length === 0, "evicted artwork bypassed retry backoff")
+                    retry.nextAt = 0
+                    ShellStore.retryVisibleArtwork(Date.now())
+                    check(requests().length === 1, "evicted artwork did not retry once when due")
+                    client.responseReceived(requests()[0].id, {cached:true, artworkUrl:cached})
+                    errorDeadline = Date.now() + 300
+                    phase = 3
+                } else if (phase === 3) {
+                    if (ShellStore.artworkUrl(source) !== "" && Date.now() < errorDeadline) return
+                    check(ShellStore.artworkUrl(source) === "", "repeated cached-file Image.Error did not invalidate")
+                    const retry = ShellStore.artworkRetrySources[source]
+                    check(retry && retry.failures === 2 && retry.nextAt > Date.now() + 50000,
+                        "repeated cached-file errors lost exponential backoff")
+                    check(requests().length === 1, "repeated cached-file errors entered a resolve loop")
+                    retry.nextAt = 0
+                    ShellStore.retryVisibleArtwork(Date.now())
+                    check(requests().length === 2, "second eviction retry was not bounded")
+                    client.responseReceived(requests()[1].id, {cached:false})
+                    check(ShellStore.artworkRetrySources[source].failures === 3, "eviction retry lost exponential backoff")
+                    card.visible = false
+                    check(!ShellStore.artworkInterests[source] && !ShellStore.artworkRetrySources[source],
+                        "hidden evicted artwork retained retry work")
+                    ShellStore.retryVisibleArtwork(Date.now() + 3600000)
+                    check(requests().length === 2, "hidden evicted artwork kept resolving")
+                    card.visible = true
+                    check(requests().length === 3, "reacquired evicted artwork did not resolve")
+                    client.responseReceived(requests()[2].id, {cached:true, artworkUrl:recovered})
+                    phase = 4
+                } else if (phase === 4) {
+                    if (image.status !== Image.Ready) return
+                    check(String(image.source) === recovered, "reacquired artwork did not display the replacement PNG")
+                    check(!ShellStore.artworkRetrySources[source], "successful artwork kept retry work")
+                    ShellStore.reportArtworkLoad(source, cached, true)
+                    check(ShellStore.artworkUrl(source) === recovered, "stale image error invalidated recovered artwork")
+                    check(requests().length === 3, "recovered artwork entered a resolve loop")
+                    card.destroy()
+                    state.passed = true
+                    timer.stop()
+                }
+            } catch (error) {
+                state.error = String(error)
+                timer.stop()
+            }
+        })
+        timer.start()
+    }
+
+    function prepareAppearance(screen, genreMenu) {
+        const stores = ["STEAM","EPIC","XBOX","NONE","UPLAY","EA_APP","GOG","BATTLENET","GAIJIN"]
+        const preview = []
+        for (let i = 0; i < 24; ++i) {
+            const entry = game(String(i))
+            entry.title = "A longer game title: Definitive Edition " + i
+            entry.availableStores = [stores[i % stores.length]]
+            entry.variants[0].store = stores[i % stores.length]
+            entry.genres = ["ACTION", "MASSIVELY_MULTIPLAYER", "ROLE_PLAYING", "ADVENTURE", "SIMULATION", "STRATEGY", "INDIE", "SPORTS"]
+            preview.push(entry)
+        }
+        ShellStore.storeGames = preview
+        ShellStore.storeHasMore = false
+        ShellStore.storeError = ""
+        ShellStore.catalogOwnerState.storeCoverageWarning = ""
+        ShellStore.catalogOwnerState.storePresentationErrors = ({})
+        ShellStore.applySetting("desktopRailCollapsed", false)
+        ShellStore.authSession = {user:{userId:"store-fixture", displayName:"A very long account display name"}}
+        check(screen.storeOptions.length === 10, "store choices were truncated")
+        screen.openMenu = genreMenu ? "genre" : "store"
+        return true
+    }
+}

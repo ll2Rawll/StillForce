@@ -1,0 +1,643 @@
+name: Qt unsigned build
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: Unsigned build channel (nightly, supporter, or stable)
+        type: string
+        default: nightly
+      upload_complete:
+        description: Upload the verified complete package set
+        type: boolean
+        default: false
+      update_public_key:
+        description: Optional base64 Ed25519 public key pinned into the application core
+        type: string
+        default: ""
+      linux_arm64_host:
+        description: Add an x64 cross-build benchmark alongside the native ARM64 baseline
+        type: string
+        default: native
+    outputs:
+      version:
+        description: Immutable package version
+        value: ${{ jobs.metadata.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record immutable build identity
+        id: version
+        shell: bash
+        env:
+          BUILD_CHANNEL: ${{ inputs.channel }}
+          LINUX_ARM64_HOST: ${{ inputs.linux_arm64_host }}
+        run: |
+          case "$LINUX_ARM64_HOST" in native|x64) ;; *) exit 1 ;; esac
+          version=$(python3 opennow-qt/packaging/nightly_release.py version \
+            --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" \
+            --channel "$BUILD_CHANNEL")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+
+  linux-arm64-cross:
+    name: Linux ARM64 cross-build
+    needs: metadata
+    if: inputs.linux_arm64_host == 'x64'
+    uses: ./.github/workflows/qt-linux-arm64-cross.yml
+    with:
+      version: ${{ needs.metadata.outputs.version }}
+      update_public_key: ${{ inputs.update_public_key }}
+      channel: ${{ inputs.channel }}
+
+  packages:
+    name: Package ${{ matrix.label }}
+    needs: metadata
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ startsWith(matrix.label, 'macos-') && 120 || 360 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x64
+            os: blacksmith-8vcpu-ubuntu-2404
+            build-parallel: 8
+            qt-host: linux
+            qt-arch: linux_gcc_64
+            package-generator: DEB
+            rust-target: ""
+            cmake-arch: ""
+            linuxdeploy-arch: x86_64
+          - label: linux-arm64
+            os: blacksmith-8vcpu-ubuntu-2404-arm
+            build-parallel: 8
+            qt-host: linux_arm64
+            qt-arch: linux_gcc_arm64
+            package-generator: DEB
+            rust-target: ""
+            cmake-arch: ""
+            linuxdeploy-arch: aarch64
+          - label: windows-arm64
+            os: blacksmith-8vcpu-windows-2025
+            build-parallel: 8
+            qt-host: windows
+            qt-arch: win64_msvc2022_arm64_cross_compiled
+            package-generator: "ZIP"
+            rust-target: aarch64-pc-windows-msvc
+            cmake-arch: ARM64
+          - label: windows-x64
+            os: blacksmith-8vcpu-windows-2025
+            build-parallel: 8
+            qt-host: windows
+            qt-arch: win64_msvc2022_64
+            package-generator: "ZIP"
+            rust-target: ""
+            cmake-arch: ""
+            linuxdeploy-arch: ""
+          - label: macos-arm64
+            os: blacksmith-6vcpu-macos-15
+            build-parallel: 3
+            qt-host: mac
+            qt-arch: clang_64
+            package-generator: "DragNDrop;ZIP"
+            rust-target: aarch64-apple-darwin
+            cmake-arch: ""
+            macos-arch: arm64
+            package-arch: arm64
+          - label: macos-x64
+            os: blacksmith-6vcpu-macos-15
+            build-parallel: 3
+            qt-host: mac
+            qt-arch: clang_64
+            package-generator: "DragNDrop;ZIP"
+            rust-target: x86_64-apple-darwin
+            cmake-arch: ""
+            macos-arch: x86_64
+            package-arch: x64
+
+    env:
+      CARGO_TERM_COLOR: always
+      SDL_VERSION: release-3.2.20
+      OPENNOW_BUILD_VERSION: ${{ needs.metadata.outputs.version }}
+      OPENNOW_UPDATE_PUBLIC_KEY: ${{ inputs.update_public_key }}
+      MACOSX_DEPLOYMENT_TARGET: ${{ startsWith(matrix.label, 'macos-') && '13.0' || '' }}
+      OPENNOW_MACOS_ARCH: ${{ matrix.macos-arch }}
+      OPENNOW_MACOS_HOST_ARCH: ${{ startsWith(matrix.label, 'macos-') && 'arm64' || '' }}
+      OPENNOW_PACKAGE_ARCH: ${{ matrix.package-arch }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Prepare Ubuntu HTTPS mirrors
+        if: matrix.label == 'linux-x64'
+        shell: bash
+        run: sudo python3 .github/scripts/prepare-ubuntu-apt-https.py
+
+      - name: Start Windows Media Foundation installation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/windows-media-foundation-background.ps1 Start
+
+      - name: Map stable Windows workspace
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/map-windows-workspace.ps1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Test Windows release package contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: opennow-qt/tests/test_windows_release.ps1
+
+      - name: Test Windows update helper dependency policy
+        if: matrix.label == 'windows-x64'
+        shell: pwsh
+        run: opennow-qt/tests/test_windows_helper_dependencies.ps1
+
+      - name: Add package Rust target
+        if: matrix.rust-target != ''
+        shell: bash
+        run: rustup target add "${{ matrix.rust-target }}"
+
+      - name: Prepare macOS build target
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash .github/scripts/prepare-macos-target.sh
+
+      - name: Install Windows ARM64 compiler
+        if: matrix.label == 'windows-arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installerRoot = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+          $installPath = & "$installerRoot\vswhere.exe" -latest -products * -property installationPath
+          if (-not $installPath) {
+            throw "Visual Studio Build Tools installation was not found."
+          }
+          $compiler = Get-ChildItem "$installPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $compiler) {
+            $arguments = "modify --installPath `"$installPath`" --quiet --norestart --add Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+            $install = Start-Process "$installerRoot\vs_installer.exe" -ArgumentList $arguments -Wait -PassThru
+            if ($install.ExitCode -notin 0, 3010) {
+              throw "Visual Studio ARM64 compiler installation failed with exit code $($install.ExitCode)."
+            }
+            $compiler = Get-ChildItem "$installPath\VC\Tools\MSVC\*\bin\Hostx64\arm64\cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $compiler) {
+            throw "Visual Studio ARM64 compiler is unavailable after installation."
+          }
+          $linker = Join-Path $compiler.Directory.FullName "link.exe"
+          if (-not (Test-Path $linker)) {
+            throw "Visual Studio ARM64 linker is unavailable after installation."
+          }
+          "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using Windows ARM64 compiler: $($compiler.FullName)"
+          Write-Host "Using Windows ARM64 linker: $linker"
+
+      - name: Setup Windows build tools
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.label == 'windows-arm64' && 'amd64_arm64' || 'x64' }}
+
+      - name: Bound Windows Rust compilation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CARGO_BUILD_JOBS=4" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if ($env:VSCMD_ARG_TGT_ARCH -eq "x64") {
+            $linker = Join-Path $env:VCToolsInstallDir "bin\Hostx64\x64\link.exe"
+            if (-not (Test-Path $linker)) { throw "The MSVC x64 linker is unavailable." }
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$linker" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
+      - name: Install Windows LLVM
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install llvm -y --no-progress
+          $llvmBin = Join-Path $env:ProgramFiles "LLVM\bin"
+          if (-not (Test-Path (Join-Path $llvmBin "clang.exe")) -or
+              -not (Test-Path (Join-Path $llvmBin "libclang.dll"))) {
+            throw "LLVM installation is missing libclang.dll"
+          }
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LIBCLANG_PATH=$llvmBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install Windows host Qt tools
+        if: matrix.label == 'windows-arm64'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtshadertools
+          dir: ${{ runner.temp }}/qt-host
+          cache: true
+          cache-key-prefix: qt-host-windows-x64
+
+      - name: Remember Windows host Qt path
+        if: matrix.label == 'windows-arm64'
+        shell: bash
+        run: echo "OPENNOW_QT_HOST_PATH=$QT_ROOT_DIR" >> "$GITHUB_ENV"
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: ${{ matrix.qt-host }}
+          target: desktop
+          arch: ${{ matrix.qt-arch }}
+          modules: qtmultimedia qtshadertools ${{ runner.os == 'Linux' && 'qtwaylandcompositor' || '' }}
+          cache: true
+          cache-key-prefix: qt-target-${{ matrix.label }}
+
+      - name: Install Linux media dependencies
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-dependencies
+        with:
+          arch: ${{ matrix.linuxdeploy-arch }}
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: ./.github/actions/rust-build-cache
+        with:
+          shared-key: ${{ runner.os == 'macOS' && format('qt-ci-{0}', matrix.label) || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
+          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          workspaces: |
+            native/opennow-core -> target
+            native/opennow-streamer -> target
+            native/opennow-core -> ../../build/opennow-qt-release/rust-target
+            native/opennow-core -> ../../build/opennow-qt-release/update-helper-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/peer-probe-rust-target
+            native/opennow-streamer -> ../../build/opennow-qt-release/streamer-rust-target
+
+      - name: Cache Qt C++ compilation
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639
+        with:
+          key: ${{ runner.os == 'macOS' && format('qt-ci-{0}', matrix.label) || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
+          restore-keys: ${{ runner.os == 'macOS' && format('qt-ci-{0}', matrix.label) || format('qt-ci-{0}-{1}', matrix.os, matrix.label) }}
+          max-size: 1G
+          evict-old-files: job
+          save: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+          verbose: 1
+
+      - name: Build and cache SDL3
+        uses: ./.github/actions/sdl3
+        with:
+          version: ${{ env.SDL_VERSION }}
+          target-arch: ${{ matrix.macos-arch || (endsWith(matrix.label, 'arm64') && 'arm64' || 'x64') }}
+          parallel: ${{ matrix.build-parallel }}
+
+      - name: Finish Windows Media Foundation installation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .github/scripts/windows-media-foundation-background.ps1 Wait
+          .github/scripts/ensure-windows-media-foundation.ps1
+
+      - name: Windows decoder regression tests
+        if: matrix.label == 'windows-x64'
+        shell: bash
+        run: cargo test --locked --manifest-path native/opennow-streamer/Cargo.toml -p opennow-streamer-platform-windows --lib
+
+      - name: Configure Qt release
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          OPENNOW_CMAKE_ARGS=()
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cd /o
+            OPENNOW_CMAKE_ARGS+=(-G "Ninja Multi-Config" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
+            if [[ "${{ matrix.cmake-arch }}" == ARM64 ]]; then
+              OPENNOW_CMAKE_ARGS+=(-DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=ARM64)
+            fi
+          fi
+          if [[ -n "${{ matrix.rust-target }}" ]]; then
+            OPENNOW_CMAKE_ARGS+=("-DOPENNOW_RUST_TARGET=${{ matrix.rust-target }}")
+          fi
+          if [[ -n "${OPENNOW_QT_HOST_PATH:-}" ]]; then
+            OPENNOW_CMAKE_ARGS+=("-DQT_HOST_PATH=${OPENNOW_QT_HOST_PATH}")
+          fi
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            OPENNOW_CMAKE_ARGS+=(-DCMAKE_INSTALL_LIBDIR=lib)
+          fi
+          cmake -S opennow-qt -B build/opennow-qt-release \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DOPENNOW_BUILD_VERSION="$OPENNOW_BUILD_VERSION" \
+            -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$OPENNOW_UPDATE_PUBLIC_KEY" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install" \
+            "${OPENNOW_CMAKE_ARGS[@]}"
+
+      - name: Build Qt release
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then cd /o; fi
+          cmake --build build/opennow-qt-release --config Release --parallel "${{ matrix.build-parallel }}"
+
+      - name: Test Qt shell
+        id: qt-tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: ctest --test-dir build/opennow-qt-release -C Release --output-on-failure --parallel ${{ matrix.build-parallel }} --no-tests=error -LE interactive-desktop
+
+      - name: Create unsigned package
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          PACKAGE_GENERATOR: ${{ matrix.package-generator }}
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then cd /o; fi
+          mkdir -p build/qt-packages
+          cpack --config build/opennow-qt-release/CPackConfig.cmake \
+            -C Release \
+            -G "$PACKAGE_GENERATOR" \
+            -B build/qt-packages
+
+      - name: Verify Windows portable ZIP payload
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          . ./opennow-qt/packaging/windows-release.ps1
+          $zip = @(Get-ChildItem build/qt-packages -Filter *.zip)
+          if ($zip.Count -ne 1) { throw "Expected one ZIP" }
+          $zipExpanded = Join-Path $env:RUNNER_TEMP "nightly-zip-expanded"
+          Expand-Archive $zip[0].FullName $zipExpanded
+          Assert-OpenNowPackagePayload -Root $zipExpanded -DeploymentRoot build/opennow-qt-release/Release
+
+      - name: Build setup.exe
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SETUP_VERSION: ${{ needs.metadata.outputs.version }}
+          SETUP_ARCH: ${{ matrix.label == 'windows-arm64' && 'arm64' || 'x64' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = @(Get-ChildItem build/qt-packages -Filter *.zip)
+          if ($zip.Count -ne 1) { throw "Expected one portable ZIP" }
+          $payload = Join-Path $env:RUNNER_TEMP "setup-payload"
+          if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
+          Expand-Archive $zip[0].FullName $payload
+          $setup = Join-Path (Resolve-Path build/qt-packages) ([IO.Path]::GetFileNameWithoutExtension($zip[0].Name) + "-setup.exe")
+          ./opennow-qt/packaging/windows/build-setup.ps1 -Payload $payload -Version $env:SETUP_VERSION -Arch $env:SETUP_ARCH -OutputFile $setup
+
+      - name: Create Linux AppImage and bundled DEB and smoke-test
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-package
+        with:
+          arch: ${{ matrix.linuxdeploy-arch }}
+          channel: ${{ inputs.channel }}
+
+      - name: Upload unsigned package
+        if: runner.os != 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-qt-${{ matrix.label }}-unsigned
+          path: |
+            build/qt-packages/*.AppImage
+            build/qt-packages/*.AppImage.zsync
+            build/qt-packages/*.deb
+            build/qt-packages/*.dmg
+            build/qt-packages/*.zip
+            build/qt-packages/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Test macOS native contracts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          [[ "$(uname -m)" == "$OPENNOW_MACOS_HOST_ARCH" ]]
+          python3 -m unittest discover -s opennow-qt/tests -p test_macos_build.py
+          python3 -m unittest discover -s opennow-qt/packaging -p test_macos_awdl.py
+          rust_test_target=()
+          if [[ "$OPENNOW_MACOS_HOST_ARCH" != "$OPENNOW_MACOS_ARCH" ]]; then
+            rust_test_target=(--target "${{ matrix.rust-target }}")
+          fi
+          cargo test --manifest-path native/opennow-core/Cargo.toml --locked "${rust_test_target[@]}"
+          cargo test --manifest-path native/opennow-streamer/Cargo.toml --locked "${rust_test_target[@]}" \
+            -p opennow-streamer-platform-macos -p opennow-streamer-protocol -p opennow-streamer-ffi -p opennow-awdl-helper
+      - name: Configure and build Qt native release
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cmake -S opennow-qt -B build/opennow-qt-release \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="$OPENNOW_MACOS_ARCH" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            -DOPENNOW_MACOS_ADHOC_SIGN=ON \
+            -DOPENNOW_BUILD_VERSION="$OPENNOW_BUILD_VERSION" \
+            -DOPENNOW_UPDATE_ED25519_PUBLIC_KEY="$OPENNOW_UPDATE_PUBLIC_KEY" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/SDL-install"
+          cmake --build build/opennow-qt-release --parallel 3
+      - name: Test Qt shell and embedded runtime offscreen
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ctest --test-dir build/opennow-qt-release --output-on-failure --parallel ${{ matrix.label == 'macos-x64' && 2 || matrix.build-parallel }} --no-tests=error -LE interactive-desktop \
+            -R '^opennow-.*-tests$|^opennow-acceptance-verifier-help$|^qml-(desktop-route-(home|settings|stream)|fullscreen-.*stats-shortcut|desktop-stream-.*|streamer-event-contract)$'
+      - name: Package unsigned macOS DMG and validation ZIP
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p build/qt-packages
+          cpack --config build/opennow-qt-release/CPackConfig.cmake \
+            -G 'DragNDrop;ZIP' -B build/qt-packages
+      - name: Test relocated bundle without development libraries
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          packages=(build/qt-packages/OpenNOW-Qt-*-Darwin-"$OPENNOW_PACKAGE_ARCH".zip)
+          [[ ${#packages[@]} -eq 1 && -f "${packages[0]}" ]]
+          ditto -x -k "${packages[0]}" "$RUNNER_TEMP/zip-relocated"
+          zip_app=$(find "$RUNNER_TEMP/zip-relocated" -name OpenNOW.app -type d -print -quit)
+          [[ -n "$zip_app" ]]
+          dmgs=(build/qt-packages/OpenNOW-Qt-*-Darwin-"$OPENNOW_PACKAGE_ARCH".dmg)
+          [[ ${#dmgs[@]} -eq 1 && -f "${dmgs[0]}" ]]
+          hdiutil verify "${dmgs[0]}"
+          mount="$RUNNER_TEMP/opennow-dmg"
+          mkdir -p "$mount" "$RUNNER_TEMP/dmg-relocated"
+          hdiutil attach "${dmgs[0]}" -readonly -nobrowse -mountpoint "$mount"
+          trap 'hdiutil detach "$mount"' EXIT
+          test -d "$mount/OpenNOW.app"
+          ditto "$mount/OpenNOW.app" "$RUNNER_TEMP/dmg-relocated/OpenNOW.app"
+          hdiutil detach "$mount"
+          trap - EXIT
+          for app in "$zip_app" "$RUNNER_TEMP/dmg-relocated/OpenNOW.app"; do
+            /usr/bin/codesign --verify --deep --strict "$app"
+            [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist") == io.github.opencloudgaming.OpenNOW ]]
+            identity=$(/usr/bin/codesign --display --verbose=4 "$app" 2>&1)
+            printf '%s\n' "$identity" | grep -Fx 'Identifier=io.github.opencloudgaming.OpenNOW'
+            printf '%s\n' "$identity" | grep -Fx 'Signature=adhoc'
+            printf '%s\n' "$identity" | grep -Fx 'TeamIdentifier=not set'
+            bin="$app/Contents/MacOS"
+            for executable in OpenNOW opennow-core opennow-acceptance-verify opennow-update-helper opennow-streamer; do
+              test -x "$bin/$executable"
+              lipo "$bin/$executable" -verify_arch "$OPENNOW_MACOS_ARCH"
+            done
+            test -x "$app/Contents/Helpers/opennow-awdl-helper"
+            lipo "$app/Contents/Helpers/opennow-awdl-helper" -verify_arch "$OPENNOW_MACOS_ARCH"
+            /usr/bin/codesign --verify --strict "$app/Contents/Helpers/opennow-awdl-helper"
+            /usr/bin/codesign --display --verbose=4 "$app/Contents/Helpers/opennow-awdl-helper" 2>&1 \
+              | grep -Fx 'Identifier=io.github.opencloudgaming.OpenNOW.awdl-helper'
+            plutil -lint "$app/Contents/Resources/opennow-awdl.plist"
+            test -f "$bin/libopennow_streamer_ffi.dylib"
+            lipo "$bin/libopennow_streamer_ffi.dylib" -verify_arch "$OPENNOW_MACOS_ARCH"
+            otool -D "$bin/libopennow_streamer_ffi.dylib" \
+              | grep -Fx '@rpath/libopennow_streamer_ffi.dylib'
+            test -f "$app/Contents/Resources/licenses/THIRD_PARTY_NOTICES"
+            test -f "$app/Contents/PlugIns/imageformats/libqsvg.dylib"
+            restore() {
+              for path in "$PWD/build/opennow-qt-release" "$QT_ROOT_DIR" "$RUNNER_TEMP/SDL-install"; do
+                if [[ -d "$path.unavailable" ]]; then mv "$path.unavailable" "$path"; fi
+              done
+            }
+            trap restore EXIT
+            mv build/opennow-qt-release build/opennow-qt-release.unavailable
+            mv "$QT_ROOT_DIR" "$QT_ROOT_DIR.unavailable"
+            mv "$RUNNER_TEMP/SDL-install" "$RUNNER_TEMP/SDL-install.unavailable"
+            unset QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML2_IMPORT_PATH QML_IMPORT_PATH
+            unset DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_FALLBACK_FRAMEWORK_PATH
+            "$bin/opennow-acceptance-verify" --help
+            python3 - "$bin" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import select
+          import subprocess
+          import sys
+          import tempfile
+
+          sys.path.insert(0, str(Path.cwd() / "opennow-qt/packaging"))
+          from macos_release import verified_bundle_targets
+
+          bin_dir = Path(sys.argv[1])
+          verified_bundle_targets(bin_dir.parent.parent, os.environ["OPENNOW_MACOS_ARCH"])
+          for name in ("OpenNOW", "opennow-core", "opennow-acceptance-verify",
+                       "opennow-update-helper", "opennow-streamer", "libopennow_streamer_ffi.dylib",
+                       "../Helpers/opennow-awdl-helper"):
+              dependencies = subprocess.check_output(["otool", "-L", bin_dir / name], text=True)
+              for line in dependencies.splitlines()[1:]:
+                  dependency = line.strip().split(" (", 1)[0]
+                  if name == "../Helpers/opennow-awdl-helper":
+                      assert dependency.startswith(("/System/Library/", "/usr/lib/")), (name, dependency)
+                  assert not dependency.startswith("/") or dependency.startswith(
+                      ("/System/Library/", "/usr/lib/")), (name, dependency)
+          probe = subprocess.run(
+              [bin_dir / "opennow-streamer"],
+              input='{"id":"package-probe","type":"hello","protocolVersion":8}\n'
+                    '{"id":"package-shutdown","type":"shutdown"}\n',
+              text=True, capture_output=True, check=True, timeout=30)
+          messages = [json.loads(line) for line in probe.stdout.splitlines()]
+          ready = next(m for m in messages if m.get("id") == "package-probe")
+          assert ready.get("type") == "ready", ready
+          assert any(b.get("backend") == "videotoolbox" for b in ready["capabilities"]["videoBackends"])
+          with tempfile.TemporaryDirectory() as data_dir:
+              core = subprocess.Popen(
+                  [bin_dir / "opennow-core", "--data-dir", data_dir],
+                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+              try:
+                  core.stdin.write('{"type":"request","id":"package-core","method":"core.hello",'
+                                   '"params":{"protocolVersion":6}}\n')
+                  core.stdin.flush()
+                  assert select.select([core.stdout], [], [], 30)[0], "Core handshake timed out"
+                  response = json.loads(core.stdout.readline())
+                  assert response.get("id") == "package-core" and response.get("ok") is True, response
+                  assert {"catalog.libraryPages.v1", "catalog.metadata.v1", "account.syncObservation.v1", "account.mutations.scoped.v1", "catalog.languages.v1", "queue.servers.v1", "auth.accountPicker.v1", "session.terminalCleanup.v1", "session.allocationSettlement.v1", "catalog.storeLocal.v2", "session.adReportIdentity.v1"}.issubset(response["result"]["capabilities"]), response
+              finally:
+                  core.kill()
+                  core.communicate(timeout=5)
+          subprocess.run(
+              [bin_dir / "OpenNOW", "--smoke-test", "--allow-multiple-instances",
+               "--desktop", "--route", "home", "--reduced-motion"],
+              env={**os.environ, "QT_QPA_PLATFORM": "cocoa"}, check=True, timeout=30)
+          PY
+            restore
+            trap - EXIT
+          done
+      - name: Upload macOS validation package
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-${{ matrix.label }}-validation
+          path: build/qt-packages/*.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload unsigned macOS DMG
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-qt-${{ matrix.label }}-unsigned
+          path: build/qt-packages/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  flatpak:
+    name: Flatpak ${{ matrix.arch }}
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    uses: ./.github/workflows/qt-flatpak.yml
+    with:
+      arch: ${{ matrix.arch }}
+      version: ${{ needs.metadata.outputs.version }}
+      update_public_key: ${{ inputs.update_public_key }}
+
+  artifact-inventory:
+    name: Verify complete unsigned artifact set
+    needs: [metadata, packages, flatpak]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    env:
+      RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+      BUILD_CHANNEL: ${{ inputs.channel }}
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: opennow-qt-*-unsigned
+          path: unsigned-artifacts
+      - name: Verify the complete package set, including setup.exe, and prepare release checksums
+        shell: bash
+        run: |
+          python3 opennow-qt/packaging/nightly_release.py assemble \
+            --source unsigned-artifacts --destination unsigned-packages \
+            --version "$RELEASE_VERSION" --commit "$SOURCE_SHA" --channel "$BUILD_CHANNEL"
+          (cd unsigned-packages && sha256sum --check --strict SHA256SUMS)
+      - name: Upload complete unsigned build
+        if: inputs.upload_complete
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennow-qt-${{ needs.metadata.outputs.version }}-complete-unsigned
+          path: unsigned-packages/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
