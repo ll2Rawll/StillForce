@@ -1,25 +1,39 @@
 # Stillforce
 
-Stillforce is a standalone Windows x64 client for GeForce NOW, built on OpenNOW 1.0.5. Its desktop menus pair StillCord's black satin artwork with silver controls, a floating glass sidebar and a sculpted sign-in screen.
+A standalone **GeForce NOW client for Windows** with StillCord’s black satin, a sculpted silver sign-in screen and a floating glass menu. It runs on OpenNOW’s native Rust streaming engine. Bring your GeForce NOW account, choose an accent and open your library.
+
+<a href="https://cdn.jsdelivr.net/gh/ll2Rawll/StillForce@motion-cut/docs/media/stillforce-trailer.mp4"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/media/trailer-poster.webp"><img src="docs/media/stillforce-preview.webp" alt="Watch the 21-second Stillforce trailer. A silver S turns in the light, then the Windows client opens its glass sidebar, appearance controls and stream statistics." width="100%"></picture></a>
+
+**[Watch the 21-second trailer](https://cdn.jsdelivr.net/gh/ll2Rawll/StillForce@motion-cut/docs/media/stillforce-trailer.mp4)** · **[Download for Windows x64](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.5/Stillforce-Windows-x64.zip)** · [Save the MP4](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.5/Stillforce-Trailer.mp4) · [Get the source ZIP](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.5/Stillforce-Source.zip)
+
+## Inside Stillforce
+
+| Sign in | Make it yours | Inspect a session |
+| :--- | :--- | :--- |
+| [![Silver Stillforce ribbon alongside the GeForce NOW provider sign-in panel](docs/media/sign-in.webp)](docs/media/sign-in.webp) | [![Appearance settings with dark glass panels, an interface scale slider and a row of accent swatches](docs/media/appearance.webp)](docs/media/appearance.webp) | [![F3 overlay showing example frame rate, ping, latency and packet loss fields](docs/media/statistics-detail.webp)](docs/media/statistics.webp) |
+| Sign in through NVIDIA or an alliance provider. Search for games or open favorites and collections from your library. | Choose a theme, accent and background in **Settings → Appearance**. Use reduced motion for quieter menus, or switch to the controller layout. | Press **F3** for ping, packet loss, frame statistics and the rig your server reports. **Ctrl+G** opens the stream menu. The image shows sample data. |
 
 ## Run on Windows
 
-1. Extract the entire Windows ZIP into a folder of your choice.
-2. Open `bin\Stillforce.exe`. Keep the folders beside `bin` in place so Qt can find its plugins.
-3. Sign in through NVIDIA or your GeForce NOW alliance provider, then open your library or search for a game.
+1. Download the **Windows x64 ZIP** and extract the whole archive into a folder of your choice. [Windows download](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.5/Stillforce-Windows-x64.zip)
+2. Open `Stillforce\bin\Stillforce.exe`. Keep the extracted folders together so Qt can find its plugins. If Windows asks for the Microsoft Visual C++ runtime, use the included `bin\vc_redist.x64.exe`.
+3. Sign in, open your library and launch a game. Stillforce stores its settings in `%APPDATA%\Stillforce` and saves captures in `Pictures\Stillforce`.
 
-If Windows requests the Microsoft Visual C++ runtime, run the bundled `bin\vc_redist.x64.exe`. You can use Stillforce alongside OpenNOW. Windows settings live under `%APPDATA%\Stillforce`; screenshots and recordings live under `Pictures\Stillforce`. Automatic usage and error reports are off until you opt in. If you enable them, reports go to the OpenNOW developers. To update this portable build, close Stillforce and extract a newer Stillforce release into a fresh folder.
+This portable Windows build is unsigned. The packaged client passed sign-in screen, menu navigation and reduced-motion checks under Wine. A live, signed-in game session still needs verification on Windows hardware. To update, close the client and extract the next release into a fresh folder. Automatic usage and error reports are off by default. If you opt in, reports go to the OpenNOW developers. [Release notes](https://github.com/ll2Rawll/StillForce/releases/tag/stillforce-v1.0.5)
 
-## Inside the app
+### Which rig did I get?
 
-- Browse games, manage favorites and collections, and switch to the controller layout.
-- Change the background and accent in Settings. The menu respects Windows animation preferences and the in-app reduced-motion setting.
-- Use **F3** during play for packet loss, jitter, network latency and frame statistics. **Ctrl+G** opens the stream menu. When the server reports it, the overlay also shows your assigned rig. Ultimate gives you priority for an RTX 5080. If your nearest region is full, NVIDIA can assign a 4080 there. [NVIDIA’s rig allocation guide](https://nvidia.custhelp.com/app/answers/detail/a_id/5702)
-- Game video uses OpenNOW's native Rust streaming engine. The interface uses Qt Quick, and the Rust core handles settings, authentication, catalog and session requests.
+During a stream, press **F3** and look at the model beside the server location. NVIDIA chooses the rig. On Ultimate, RTX 5080 availability depends on the game, the server and capacity. NVIDIA says a full nearby server can assign an RTX 4080 before sending you to another region. Stillforce displays the assignment when NVIDIA reports it. [NVIDIA’s rig allocation guide](https://nvidia.custhelp.com/app/answers/detail/a_id/5702) · [GeForce NOW server status](https://status.geforcenow.com/)
+
+### Packet loss and stutters
+
+Open **F3** during a hitch and compare packet loss, ping and frame drops. If loss rises on Wi-Fi, try the same game and server over Ethernet. If the network readings stay steady, compare decode time and frame drops at a lower stream resolution. Testing one change at a time makes the results easier to interpret.
 
 ## Build from source
 
-Use a Visual Studio 2022 x64 developer shell with CMake, Rust (MSVC), SDL3 and Qt 6.8 or newer. Install the Qt Quick, Multimedia, Shader Tools and SVG modules and make Qt and SDL3 discoverable through `CMAKE_PREFIX_PATH`.
+The Rust core handles sign-in, settings, the catalog and session requests. The native Rust streamer handles video, audio and input. The Windows interface uses Qt Quick and C++.
+
+Use a Visual Studio 2022 x64 developer shell with CMake, Rust (MSVC), SDL3 and Qt 6.8 or newer. Install the Qt Quick, Multimedia, Shader Tools and SVG modules. Make Qt and SDL3 discoverable through `CMAKE_PREFIX_PATH`.
 
 ```powershell
 cmake -S opennow-qt -B build/qt -G "Visual Studio 17 2022" -A x64
@@ -27,10 +41,10 @@ cmake --build build/qt --config Release --target opennow-qt
 cmake --install build/qt --config Release --prefix dist/Stillforce
 ```
 
-The installed executable is `dist/Stillforce/bin/Stillforce.exe`. Build every target before running the complete native test suite. The Qt acceptance guide covers menu, motion and streaming checks. [Acceptance guide](docs/qt-acceptance.md)
+Open `dist\Stillforce\bin\Stillforce.exe`. Build all targets before running the complete native test suite. [Qt build guide](opennow-qt/README.md) · [Acceptance checks](docs/qt-acceptance.md)
 
 ## Credits
 
-The source includes OpenNOW's client and Rust streaming implementation under the MIT license. This fork starts from release `v1.0.5`, commit `a9de957a5902c54186e9d4b44b1562f0b6beb951`. The Windows ZIP combines the rebuilt Stillforce shell and account core with the matching upstream stream runtime and its dependencies. [OpenNOW](https://github.com/OpenCloudGaming/OpenNOW/tree/a9de957a5902c54186e9d4b44b1562f0b6beb951) · [Original documentation](README.upstream.md) · [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES)
+Stillforce is based on OpenNOW `v1.0.5` at commit `a9de957`. The Windows package combines the rebuilt Stillforce shell and account core with the matching upstream stream runtime and its dependencies. OpenNOW’s client and streaming implementation are MIT-licensed. [OpenNOW source at this revision](https://github.com/OpenCloudGaming/OpenNOW/tree/a9de957a5902c54186e9d4b44b1562f0b6beb951) · [Upstream README](README.upstream.md) · [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES)
 
-The satin artwork comes from ll2Rawll's StillCord. The Stillforce mark and ribbon were made for this fork. NVIDIA and GeForce NOW are trademarks of NVIDIA Corporation. [StillCord](https://github.com/ll2Rawll/StillCord) · [Artwork license](opennow-qt/res/brand/StillCord-LICENSE.txt)
+The black satin artwork comes from StillCord. The silver mark and ribbon were created for Stillforce. GeForce NOW and NVIDIA are trademarks of NVIDIA Corporation. [StillCord](https://github.com/ll2Rawll/StillCord) · [Artwork license](opennow-qt/res/brand/StillCord-LICENSE.txt)
