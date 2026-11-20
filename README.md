@@ -2,9 +2,9 @@
 
 A standalone **GeForce NOW client for Windows** with StillCord’s black satin, a sculpted silver sign-in screen and a floating glass menu. It runs on OpenNOW’s native Rust streaming engine. Bring your GeForce NOW account, choose an accent and open your library.
 
-<a href="https://cdn.jsdelivr.net/gh/ll2Rawll/StillForce@motion-cut/docs/media/stillforce-trailer.mp4"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/media/trailer-poster.webp"><img src="docs/media/stillforce-preview.webp" alt="Watch the 21-second Stillforce trailer. A silver S turns in the light, then the Windows client opens its glass sidebar, appearance controls and stream statistics." width="100%"></picture></a>
+<a href="https://cdn.jsdelivr.net/gh/ll2Rawll/StillForce@motion-cut-home/docs/media/stillforce-trailer.mp4"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/media/trailer-poster.webp"><img src="docs/media/stillforce-preview.webp" alt="Watch the 21-second Stillforce trailer. A silver S turns in the light. The full-screen Home view scrolls through a 31-game sample library, followed by appearance controls and stream statistics." width="100%"></picture></a>
 
-**[Watch the 21-second trailer](https://cdn.jsdelivr.net/gh/ll2Rawll/StillForce@motion-cut/docs/media/stillforce-trailer.mp4)** · **[Download for Windows x64](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.5/Stillforce-Windows-x64.zip)** · [Save the MP4](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.5/Stillforce-Trailer.mp4) · [Get the source ZIP](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.5/Stillforce-Source.zip)
+**[Watch the 21-second trailer](https://cdn.jsdelivr.net/gh/ll2Rawll/StillForce@motion-cut-home/docs/media/stillforce-trailer.mp4)** · **[Download for Windows x64](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.5/Stillforce-Windows-x64.zip)** · [Save the MP4](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.5/Stillforce-Trailer.mp4) · [Get the source ZIP](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.5/Stillforce-Source.zip)
 
 ## Inside Stillforce
 
