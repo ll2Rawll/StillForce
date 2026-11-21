@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#0b0b0d">
   <title>Stillforce — GeForce NOW for Windows</title>
-  <meta name="description" content="Explore Stillforce’s game gallery, watch the 21-second trailer and download the independent GeForce NOW client for Windows.">
+  <meta name="description" content="Watch the 25-second Stillforce trailer, explore the game gallery and download the independent GeForce NOW client for Windows.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Stillforce — GeForce NOW for Windows">
   <meta property="og:description" content="Explore the arched game gallery and get Stillforce for Windows.">
@@ -25,7 +25,7 @@
       if (localStorage.getItem('stillforce-page-theme') === 'light') document.documentElement.dataset.theme = 'light'
     } catch {}
   </script>
-  <link rel="stylesheet" href="site/stillforce.css?v=trailer-sound">
+  <link rel="stylesheet" href="site/stillforce.css?v=how-it-works">
   <script src="site/stillforce.js?v=trailer-sound" defer></script>
 </head>
 <body>
@@ -118,16 +118,16 @@
     <section class="film-section" id="trailer" aria-labelledby="film-title">
       <div class="shell film-layout">
         <div class="film-copy">
-          <h2 id="film-title">The trailer</h2>
-          <p>Follow the Windows app through a 31-game sample library, from Control to Warframe.</p>
-          <p class="film-details"><span>21 seconds</span><span>1080p60</span></p>
-          <a class="underlink" href="media/stillforce-trailer.mp4" download="Stillforce-Trailer.mp4">Save the film</a>
+          <h2 id="film-title">How Stillforce works</h2>
+          <p>Sign in, browse the cover wall and launch a game. See what F3 shows during a session and how to change the app’s appearance.</p>
+          <p class="film-details"><span>25 seconds</span><span>1080 × 1920 at 60 fps</span></p>
+          <a class="underlink" href="https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Trailer.mp4" download="Stillforce-Trailer.mp4">Download the original MP4</a>
         </div>
         <div class="film-player">
-          <video id="trailer-player" controls playsinline preload="none" poster="media/trailer-poster.webp" width="1920" height="1080" aria-label="Stillforce trailer, 21 seconds">
-            <source src="media/stillforce-trailer.mp4" type="video/mp4">
-            <track kind="descriptions" src="site/trailer-description.vtt" srclang="en" label="English visual description">
-            <a href="media/stillforce-trailer.mp4">Download the Stillforce trailer</a>
+          <video id="trailer-player" controls playsinline preload="none" poster="media/trailer-poster.webp?v=how-it-works" width="1080" height="1920" aria-label="How Stillforce works, 25-second trailer">
+            <source src="media/stillforce-trailer.mp4?v=how-it-works" type="video/mp4">
+            <track kind="descriptions" src="site/trailer-description.vtt?v=how-it-works" srclang="en" label="English visual description">
+            <a href="https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Trailer.mp4">Download the Stillforce trailer</a>
           </video>
           <button type="button" class="film-start enhanced" id="film-start" aria-label="Play the Stillforce trailer"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg></button>
           <button type="button" class="film-sound enhanced" id="film-sound" aria-controls="trailer-player" hidden><svg class="icon" aria-hidden="true"><use href="#i-sound"/></svg>Turn sound on</button>
