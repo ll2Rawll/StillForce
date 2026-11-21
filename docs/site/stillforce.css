@@ -194,14 +194,14 @@ button:focus-visible, a:focus-visible, video:focus-visible {
 kbd { padding: .04rem .25rem; border-radius: .2rem; background: var(--control); font-size: .85em; color: var(--ink); }
 
 .film-section { background: var(--surface); border-block: 1px solid var(--rule); }
-.film-layout { padding-block: clamp(3.25rem, 6vw, 6rem); display: grid; grid-template-columns: minmax(0,1.55fr) minmax(0,.85fr); grid-template-areas: "film notes"; align-items: center; gap: clamp(2rem, 6.5vw, 7rem); }
+.film-layout { padding-block: clamp(3.25rem, 6vw, 6rem); display: grid; grid-template-columns: minmax(0, 25rem) minmax(0, 29rem); grid-template-areas: "film notes"; justify-content: center; align-items: center; gap: clamp(2rem, 6.5vw, 7rem); }
 .film-copy { grid-area: notes; }
 .film-copy p:not(.film-details), .install-copy p { margin-top: 1.15rem; color: var(--body); max-width: 34rem; text-wrap: pretty; }
 .film-details { display: flex; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: .875rem; margin: 1.25rem 0 .8rem; }
 .film-details span + span { padding-left: .65rem; margin-left: .65rem; border-left: 1px solid var(--rule); }
 .underlink { font-size: .9375rem; font-weight: 500; display: inline-flex; align-items: center; min-height: 2.75rem; }
-.film-player { grid-area: film; position: relative; background: #0a0a0d; border-radius: .7rem; border: 1px solid var(--rule); overflow: hidden; }
-.film-player video { width: 100%; height: auto; aspect-ratio: 16/9; }
+.film-player { grid-area: film; justify-self: center; width: min(100%, 25rem, 45vh); width: min(100%, 25rem, 45svh); position: relative; background: #0a0a0d; border-radius: .7rem; border: 1px solid var(--rule); overflow: hidden; }
+.film-player video { width: 100%; height: auto; aspect-ratio: 9 / 16; }
 .js .film-start, .js .film-sound { position: absolute; right: .95rem; border: 1px solid #ffffff72; background: #1a1a1edb; color: #fff; transition: transform 180ms var(--ease), background-color 180ms; }
 .js .film-start { bottom: .95rem; display: grid; place-items: center; width: 3.25rem; height: 3.25rem; border-radius: 50%; }
 .js .film-sound { top: .95rem; display: inline-flex; align-items: center; gap: .45rem; min-height: 2.75rem; padding: .45rem .9rem; border-radius: 999px; font-size: .9375rem; font-weight: 600; }

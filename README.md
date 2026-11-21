@@ -4,7 +4,7 @@
 
 A standalone **GeForce NOW client for Windows** with a dark, interactive game gallery. Move across the cover wall and the game’s artwork fills the arch beside it. Play from the gallery or open the details.
 
-**[Visit the Stillforce site](https://ll2rawll.github.io/StillForce/)** · **[Watch the 21-second trailer](https://cdn.jsdelivr.net/gh/ll2Rawll/StillForce@stillforce-v1.0.6/docs/media/stillforce-trailer.mp4)** · **[Download for Windows x64](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Windows-x64.zip)** · [Save the MP4](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Trailer.mp4) · [Get the source ZIP](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Source.zip)
+**[Visit the Stillforce site](https://ll2rawll.github.io/StillForce/)** · **[Watch the 25-second trailer](https://ll2rawll.github.io/StillForce/#trailer)** · **[Download for Windows x64](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Windows-x64.zip)** · [Save the MP4](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Trailer.mp4) · [Get the source ZIP](https://github.com/ll2Rawll/StillForce/releases/download/stillforce-v1.0.6/Stillforce-Source.zip)
 
 ## Inside Stillforce
 
@@ -13,11 +13,18 @@ A standalone **GeForce NOW client for Windows** with a dark, interactive game ga
 | [![Stillforce Home with Control pictured in a tall arch beside staggered game covers](docs/media/home.webp)](docs/media/home.webp) | [![Appearance settings with dark glass panels, an interface scale slider and a row of accent swatches](docs/media/appearance.webp)](docs/media/appearance.webp) | [![F3 overlay showing example frame rate, ping, latency and packet loss fields](docs/media/statistics-detail.webp)](docs/media/statistics.webp) |
 | Hover a cover to preview it. Arrow keys move through the wall and Enter opens details. Press **/** to search or open **All games** for filters. | Choose a theme, accent and background in **Settings → Appearance**. Use reduced motion for quieter menus, or switch to the controller layout. | Press **F3** for ping, packet loss, frame statistics and the rig your server reports. **Ctrl+G** opens the stream menu. The image shows sample data. |
 
-The cover wall scrolls independently while your selected game stays in view. Artwork crossfades as focus moves, and covers lift slightly under the pointer. **Settings → Appearance → Reduce motion** makes those changes immediate. The trailer uses a 31-game sample library. [View Home at full size](docs/media/home.webp) · [Sign-in screen](docs/media/sign-in.webp)
+The cover wall scrolls independently while your selected game stays in view. Artwork crossfades as focus moves, and covers lift slightly under the pointer. **Settings → Appearance → Reduce motion** makes those changes immediate. The Home screenshot shows a 31-game sample library. [View Home at full size](docs/media/home.webp) · [Sign-in screen](docs/media/sign-in.webp)
 
 ## Trailer
 
-<a href="https://cdn.jsdelivr.net/gh/ll2Rawll/StillForce@stillforce-v1.0.6/docs/media/stillforce-trailer.mp4"><picture><source media="(prefers-reduced-motion: reduce)" srcset="docs/media/trailer-poster.webp"><img src="docs/media/stillforce-preview.webp" alt="Watch the 21-second Stillforce trailer. Control, No Man’s Sky and Cyberpunk 2077 fill the arched artwork panel as the selection changes. The Windows app opens Favourites, scrolls a 31-game sample library and lands on Warframe." width="100%"></picture></a>
+<p align="center">
+  <a href="https://ll2rawll.github.io/StillForce/#trailer">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="docs/media/trailer-poster.webp">
+      <img src="docs/media/stillforce-preview.webp" width="360" alt="Watch How Stillforce works, a 25-second tour of sign-in, the game gallery, session stats and appearance settings.">
+    </picture>
+  </a>
+</p>
 
 ## Run on Windows
 
